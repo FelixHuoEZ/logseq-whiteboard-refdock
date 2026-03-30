@@ -1,0 +1,29 @@
+{
+  "name": "logseq-whiteboard-refdock",
+  "version": "0.1.0",
+  "description": "Review saved unlinked-reference snapshots while working on a Logseq whiteboard.",
+  "author": "hsk",
+  "license": "MIT",
+  "private": true,
+  "effect": true,
+  "logseq": {
+    "id": "logseq-whiteboard-refdock",
+    "title": "Whiteboard RefDock",
+    "icon": "./icon.svg",
+    "main": "./dist/index.html"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build --mode=dev",
+    "prod": "vite build"
+  },
+  "dependencies": {
+    "@logseq/libs": "0.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.2",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.1",
+    "vite-plugin-logseq": "^1.1.2"
+  }
+}

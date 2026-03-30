@@ -1,0 +1,68 @@
+export type SnapshotSourceType = "page" | "keyword";
+export type SnapshotItemType = "page" | "block";
+export type ItemStatus = "unseen" | "seen" | "skipped";
+export type StatusFilter = "all" | ItemStatus;
+export type ThemeMode = "light" | "dark";
+
+export interface WhiteboardInfo {
+  id: string;
+  name: string;
+}
+
+export interface SnapshotItem {
+  id: string;
+  type: SnapshotItemType;
+  label: string;
+  pageName?: string;
+  pageTitle?: string;
+  blockUuid?: string;
+  order: number;
+  status: ItemStatus;
+  matchedTitle?: string;
+}
+
+export interface SnapshotDiagnostics {
+  lines: string[];
+}
+
+export interface Snapshot {
+  id: string;
+  whiteboardId: string;
+  whiteboardName: string;
+  sourceType: SnapshotSourceType;
+  sourceValue: string;
+  keyword: string;
+  createdAt: number;
+  items: SnapshotItem[];
+  diagnostics?: SnapshotDiagnostics;
+}
+
+export interface GraphState {
+  dockVisible: boolean;
+  dockWidth: number;
+  snapshotsByWhiteboard: Record<string, Snapshot>;
+  scrollByWhiteboard: Record<string, number>;
+}
+
+export interface CandidatePageContext {
+  id: number;
+  uuid: string;
+  name?: string;
+  title: string;
+}
+
+export interface CandidatePage {
+  id: number;
+  uuid: string;
+  type: SnapshotItemType;
+  title: string;
+  originalName?: string;
+  rawTitle?: string;
+  content?: string;
+  name?: string;
+  page?: CandidatePageContext;
+  refIds: number[];
+  link: boolean;
+  builtIn: boolean;
+  blockType?: string;
+}
