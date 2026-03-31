@@ -3,6 +3,7 @@ export type SnapshotItemType = "page" | "block";
 export type ItemStatus = "unseen" | "seen" | "skipped";
 export type StatusFilter = "all" | ItemStatus;
 export type ThemeMode = "light" | "dark";
+export type ReferenceState = "linked" | "unlinked";
 
 export interface WhiteboardInfo {
   id: string;
@@ -13,6 +14,7 @@ export interface SnapshotItem {
   id: string;
   type: SnapshotItemType;
   label: string;
+  referenceState: ReferenceState;
   pageName?: string;
   pageTitle?: string;
   blockUuid?: string;
@@ -40,6 +42,7 @@ export interface Snapshot {
 export interface GraphState {
   dockVisible: boolean;
   dockWidth: number;
+  dockWidthsByWhiteboard: Record<string, number>;
   snapshotsByWhiteboard: Record<string, Snapshot>;
   scrollByWhiteboard: Record<string, number>;
 }

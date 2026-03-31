@@ -1,4 +1,4 @@
-import type { CandidatePage, Snapshot, SnapshotItemType, SnapshotSourceType, WhiteboardInfo } from "./types";
+import type { CandidatePage, ReferenceState, Snapshot, SnapshotItemType, SnapshotSourceType, WhiteboardInfo } from "./types";
 
 type PulledRef = {
   "db/id"?: number;
@@ -910,8 +910,7 @@ async function queryFallbackKeywordCandidates(
     .map((item) => {
       const haystack = `${item.pageName ?? ""} ${item.content}`;
       const score = scoreSearchCandidate(haystack, normalizedQuery);
-      const linked = hasLinkedReference(item.content, normalizedQuery);
-      if (score <= 0 || linked) {
+      if (score <= 0) {
         return null;
       }
 
@@ -944,8 +943,7 @@ async function queryFallbackPageCandidates(
         return nextScore > maxScore ? nextScore : maxScore;
       }, 0);
 
-      const linked = searchTerms.some((term) => hasLinkedReference(item.content, term));
-      if (bestScore <= 0 || linked) {
+      if (bestScore <= 0) {
         return null;
       }
 
@@ -1148,6 +1146,31 @@ function compareCandidates(left: CandidatePage, right: CandidatePage): number {
   return getItemLabel(left).localeCompare(getItemLabel(right), undefined, { sensitivity: "base" });
 }
 
+function getReferenceState(candidate: CandidatePage, searchTerms: string[], sourcePageId?: number): ReferenceState {
+  if (typeof sourcePageId === "number") {
+    if (candidate.id === sourcePageId || candidate.refIds.includes(sourcePageId)) {
+      return "linked";
+    }
+  }
+
+  const haystacks = [
+    candidate.content,
+    candidate.rawTitle,
+    candidate.title,
+    candidate.page?.title,
+  ].filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
+
+  const hasLinkedTerm = searchTerms.some((term) =>
+    haystacks.some((value) => hasLinkedReference(value, normalizeSearchText(term))),
+  );
+
+  if (hasLinkedTerm || candidate.link) {
+    return "linked";
+  }
+
+  return "unlinked";
+}
+
 async function buildSnapshot(params: {
   whiteboard: WhiteboardInfo;
   sourceType: SnapshotSourceType;
@@ -1202,10 +1225,14 @@ async function buildSnapshot(params: {
         return false;
       }
 
-      return !candidate.refIds.includes(params.sourcePageId);
+      if (candidate.page?.id === params.sourcePageId) {
+        return false;
+      }
+
+      return true;
     })
     .sort(compareCandidates);
-  diagnostics.push(`after source-reference filter: ${filtered.length}`);
+  diagnostics.push(`after source-page filter: ${filtered.length}`);
 
   return {
     id: crypto.randomUUID(),
@@ -1223,6 +1250,7 @@ async function buildSnapshot(params: {
         id: candidate.uuid,
         type: itemType,
         label: getItemLabel(candidate),
+        referenceState: getReferenceState(candidate, searchTerms, params.sourcePageId),
         pageName,
         pageTitle: getItemPageTitle(candidate),
         blockUuid: itemType === "block" ? candidate.uuid : undefined,
@@ -1363,16 +1391,16 @@ export async function createSnapshotFromPage(
 
   const searchTerms = getSearchTermsFromEntity(sourcePage as GenericEntity, sourceTitle);
   diagnostics.push(`search terms: ${searchTerms.join(" | ")}`);
-  const nativeCandidates = await queryNativePageCandidates(
+  const nativePageCandidates = await queryNativePageCandidates(
     ((sourcePage as { name?: string }).name ?? pageName).trim(),
   );
-  diagnostics.push(`native page candidates: ${nativeCandidates ? nativeCandidates.length : "unavailable"}`);
-  let prefetchedCandidates = nativeCandidates ?? [];
+  diagnostics.push(`native page candidates: ${nativePageCandidates ? nativePageCandidates.length : "unavailable"}`);
 
-  if (prefetchedCandidates.length === 0) {
-    prefetchedCandidates = await queryNativeKeywordCandidatesForTerms(searchTerms);
-    diagnostics.push(`native keyword fallback candidates: ${prefetchedCandidates.length}`);
-  }
+  const nativeKeywordCandidates = await queryNativeKeywordCandidatesForTerms(searchTerms);
+  diagnostics.push(`native keyword companion candidates: ${nativeKeywordCandidates.length}`);
+
+  let prefetchedCandidates = dedupeCandidates([...(nativePageCandidates ?? []), ...nativeKeywordCandidates]);
+  diagnostics.push(`combined prefetched candidates: ${prefetchedCandidates.length}`);
 
   const warmFallbackIndex = await hasWarmFallbackBlockSearchIndex();
   diagnostics.push(`warm local fallback index: ${warmFallbackIndex ? "yes" : "no"}`);

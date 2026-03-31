@@ -1,10 +1,11 @@
 import "@logseq/libs";
 
 import { createSnapshotFromKeyword, createSnapshotFromPage, getCurrentWhiteboard } from "./query";
-import { getGraphStorageKey, loadGraphState, saveGraphState } from "./storage";
+import { DEFAULT_DOCK_WIDTH, getGraphStorageKey, loadGraphState, saveGraphState } from "./storage";
 import type {
   GraphState,
   ItemStatus,
+  ReferenceState,
   Snapshot,
   SnapshotItem,
   SnapshotSourceType,
@@ -17,9 +18,18 @@ const APP_ROOT_ID = "whiteboard-refdock-app";
 const HOST_CONTAINER_ID = "whiteboard-refdock-host";
 const TOOLBAR_KEY = "whiteboard-refdock-toolbar";
 const MIN_WIDTH = 320;
-const MAX_WIDTH = 560;
-const WIDTH_STEP = 60;
+const DEFAULT_MAX_WIDTH = 560;
 type SurfaceMode = "iframe" | "host";
+type ReferenceFilter = ReferenceState;
+const SETTINGS_SCHEMA = [
+  {
+    key: "maxDockWidth",
+    type: "number",
+    default: DEFAULT_MAX_WIDTH,
+    title: "RefDock max width",
+    description: "Maximum dock width in pixels.",
+  },
+] as const;
 
 function getRenderableErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
@@ -57,6 +67,7 @@ class WhiteboardRefDockApp {
   private currentWhiteboard: WhiteboardInfo | null = null;
   private sourceType: SnapshotSourceType = "page";
   private sourceValue = "";
+  private referenceFilter: ReferenceFilter = "unlinked";
   private statusFilter: StatusFilter = "all";
   private message = "";
   private error = "";
@@ -64,6 +75,7 @@ class WhiteboardRefDockApp {
   private surfaceMode: SurfaceMode = "iframe";
   private themeMode: ThemeMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   private diagnosticsCollapsed = true;
+  private resizeCleanup: (() => void) | null = null;
 
   constructor(root: HTMLElement) {
     this.iframeRoot = root;
@@ -84,15 +96,20 @@ class WhiteboardRefDockApp {
 
   async refreshContext(): Promise<void> {
     this.currentWhiteboard = await getCurrentWhiteboard();
+    this.setCurrentDockWidth(this.getCurrentDockWidth());
+    this.selectDefaultReferenceFilter(this.getActiveSnapshot());
+    this.persist();
     await this.syncDockSurface();
     this.render();
   }
 
   async toggleDock(): Promise<void> {
+    this.debugSurface("toggleDock:before");
     this.graphState.dockVisible = !this.graphState.dockVisible;
     this.persist();
     await this.syncDockSurface();
     this.render();
+    this.debugSurface("toggleDock:after");
   }
 
   async refreshDock(): Promise<void> {
@@ -142,6 +159,43 @@ class WhiteboardRefDockApp {
     }
   }
 
+  private getConfiguredMaxWidth(): number {
+    const configuredValue = Number(logseq.settings?.maxDockWidth);
+    if (!Number.isFinite(configuredValue)) {
+      return DEFAULT_MAX_WIDTH;
+    }
+
+    return Math.max(MIN_WIDTH, Math.round(configuredValue));
+  }
+
+  private clampWidth(width: number): number {
+    return Math.min(this.getConfiguredMaxWidth(), Math.max(MIN_WIDTH, Math.round(width)));
+  }
+
+  private getCurrentDockWidth(): number {
+    if (this.currentWhiteboard) {
+      const storedWidth = this.graphState.dockWidthsByWhiteboard[this.currentWhiteboard.id];
+      if (typeof storedWidth === "number" && Number.isFinite(storedWidth)) {
+        return this.clampWidth(storedWidth);
+      }
+    }
+
+    return this.clampWidth(this.graphState.dockWidth);
+  }
+
+  private setCurrentDockWidth(width: number): void {
+    const normalizedWidth = this.clampWidth(width);
+    this.graphState.dockWidth = normalizedWidth;
+
+    if (this.currentWhiteboard) {
+      this.graphState.dockWidthsByWhiteboard[this.currentWhiteboard.id] = normalizedWidth;
+    }
+  }
+
+  private formatWidthLabel(): string {
+    return `${this.getCurrentDockWidth()}px`;
+  }
+
   private getActiveSnapshot(): Snapshot | null {
     if (!this.currentWhiteboard) {
       return null;
@@ -156,16 +210,22 @@ class WhiteboardRefDockApp {
       return [];
     }
 
-    if (this.statusFilter === "all") {
-      return snapshot.items;
-    }
+    return snapshot.items.filter((item) => {
+      if (item.referenceState !== this.referenceFilter) {
+        return false;
+      }
 
-    return snapshot.items.filter((item) => item.status === this.statusFilter);
+      if (this.statusFilter === "all") {
+        return true;
+      }
+
+      return item.status === this.statusFilter;
+    });
   }
 
   private getCounts(snapshot: Snapshot | null): Record<StatusFilter, number> {
     const counts: Record<StatusFilter, number> = {
-      all: snapshot?.items.length ?? 0,
+      all: 0,
       unseen: 0,
       seen: 0,
       skipped: 0,
@@ -176,10 +236,42 @@ class WhiteboardRefDockApp {
     }
 
     for (const item of snapshot.items) {
+      if (item.referenceState !== this.referenceFilter) {
+        continue;
+      }
+
+      counts.all += 1;
       counts[item.status] += 1;
     }
 
     return counts;
+  }
+
+  private getReferenceCounts(snapshot: Snapshot | null): Record<ReferenceFilter, number> {
+    const counts: Record<ReferenceFilter, number> = {
+      linked: 0,
+      unlinked: 0,
+    };
+
+    if (!snapshot) {
+      return counts;
+    }
+
+    for (const item of snapshot.items) {
+      counts[item.referenceState] += 1;
+    }
+
+    return counts;
+  }
+
+  private selectDefaultReferenceFilter(snapshot: Snapshot | null): void {
+    if (!snapshot) {
+      this.referenceFilter = "unlinked";
+      return;
+    }
+
+    const counts = this.getReferenceCounts(snapshot);
+    this.referenceFilter = counts.unlinked > 0 ? "unlinked" : "linked";
   }
 
   private getHostDocument(): Document | null {
@@ -193,6 +285,69 @@ class WhiteboardRefDockApp {
     } catch (_error) {
       return null;
     }
+  }
+
+  private getPluginFrameElement(): HTMLElement | null {
+    try {
+      return window.frameElement instanceof HTMLElement ? window.frameElement : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  private setPluginFrameVisibility(visible: boolean): void {
+    const frameElement = this.getPluginFrameElement();
+    if (!frameElement) {
+      return;
+    }
+
+    if (visible) {
+      frameElement.style.display = "block";
+      frameElement.style.visibility = "visible";
+      frameElement.style.pointerEvents = "auto";
+      return;
+    }
+
+    frameElement.style.display = "none";
+    frameElement.style.visibility = "hidden";
+    frameElement.style.pointerEvents = "none";
+  }
+
+  private setMainUIOverlayVisibility(visible: boolean, width?: number): void {
+    if (visible) {
+      logseq.setMainUIInlineStyle({
+        position: "fixed",
+        top: "0",
+        right: "0",
+        width: `${width ?? this.getCurrentDockWidth()}px`,
+        height: "100vh",
+        zIndex: 11,
+        display: "block",
+        opacity: 1,
+        pointerEvents: "auto",
+        border: "none",
+        background: "transparent",
+        boxShadow: "none",
+        overflow: "hidden",
+      });
+      return;
+    }
+
+    logseq.setMainUIInlineStyle({
+      position: "fixed",
+      top: "0",
+      right: "0",
+      width: "0",
+      height: "0",
+      zIndex: -1,
+      display: "none",
+      opacity: 0,
+      pointerEvents: "none",
+      border: "none",
+      background: "transparent",
+      boxShadow: "none",
+      overflow: "hidden",
+    });
   }
 
   private getCurrentRoutePath(): string | null {
@@ -230,6 +385,7 @@ class WhiteboardRefDockApp {
     }
 
     this.hostContainer = container;
+    this.hostContainer.style.setProperty("-webkit-app-region", "no-drag");
     this.hostRoot = appRoot;
     return appRoot;
   }
@@ -239,57 +395,74 @@ class WhiteboardRefDockApp {
       return;
     }
 
-    this.hostContainer.style.display = "none";
+    this.hostContainer.remove();
+    this.hostContainer = null;
+    this.hostRoot = null;
+  }
+
+  private debugSurface(event: string, extra: Record<string, unknown> = {}): void {
+    console.debug("[whiteboard-refdock]", event, {
+      dockVisible: this.graphState.dockVisible,
+      surfaceMode: this.surfaceMode,
+      whiteboard: this.currentWhiteboard?.name ?? null,
+      iframeDisplay: this.iframeRoot.style.display || "default",
+      hasFrameElement: Boolean(this.getPluginFrameElement()),
+      hasHostContainer: Boolean(this.hostContainer),
+      ...extra,
+    });
   }
 
   private async syncDockSurface(): Promise<void> {
     const isActive = Boolean(this.currentWhiteboard && this.graphState.dockVisible);
     if (!isActive) {
+      this.stopResize(false);
       this.surfaceMode = "iframe";
       this.renderRoot = this.iframeRoot;
+      this.iframeRoot.style.display = "none";
+      this.setPluginFrameVisibility(false);
       this.hideHostSurface();
+      this.setMainUIOverlayVisibility(false);
       logseq.hideMainUI({ restoreEditingCursor: false });
+      this.debugSurface("syncDockSurface:inactive");
       return;
     }
 
     const hostRoot = this.ensureHostRoot();
+    const dockWidth = this.getCurrentDockWidth();
     if (hostRoot) {
       this.surfaceMode = "host";
       this.renderRoot = hostRoot;
+      this.iframeRoot.style.display = "none";
+      this.setPluginFrameVisibility(false);
       if (this.hostContainer) {
         Object.assign(this.hostContainer.style, {
           position: "fixed",
           top: "0",
           right: "0",
-          width: `${this.graphState.dockWidth}px`,
+          width: `${dockWidth}px`,
           height: "100vh",
           zIndex: "60",
           display: "block",
+          visibility: "visible",
           pointerEvents: "auto",
           background: "transparent",
         });
       }
 
+      this.setMainUIOverlayVisibility(false);
       logseq.hideMainUI({ restoreEditingCursor: false });
+      this.debugSurface("syncDockSurface:host", { dockWidth });
       return;
     }
 
     this.surfaceMode = "iframe";
     this.renderRoot = this.iframeRoot;
+    this.iframeRoot.style.display = "block";
+    this.setPluginFrameVisibility(true);
     this.hideHostSurface();
-    logseq.setMainUIInlineStyle({
-      position: "fixed",
-      top: "0",
-      right: "0",
-      width: `${this.graphState.dockWidth}px`,
-      height: "100vh",
-      zIndex: 11,
-      border: "none",
-      background: "transparent",
-      boxShadow: "none",
-      overflow: "hidden",
-    });
+    this.setMainUIOverlayVisibility(true, dockWidth);
     logseq.showMainUI({ autoFocus: false });
+    this.debugSurface("syncDockSurface:iframe", { dockWidth });
   }
 
   private async createSnapshot(): Promise<void> {
@@ -319,6 +492,7 @@ class WhiteboardRefDockApp {
 
       this.graphState.snapshotsByWhiteboard[whiteboard.id] = snapshot;
       this.graphState.scrollByWhiteboard[whiteboard.id] = 0;
+      this.selectDefaultReferenceFilter(snapshot);
       this.persist();
       this.message = `Saved ${snapshot.items.length} snapshot items.`;
     } catch (error) {
@@ -390,15 +564,86 @@ class WhiteboardRefDockApp {
     logseq.App.pushState("page", { name: item.pageName });
   }
 
-  private changeWidth(delta: number): void {
-    const nextWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, this.graphState.dockWidth + delta));
-    if (nextWidth === this.graphState.dockWidth) {
+  private applyDockWidth(): void {
+    const width = `${this.getCurrentDockWidth()}px`;
+    if (this.surfaceMode === "host" && this.hostContainer) {
+      this.hostContainer.style.width = width;
       return;
     }
 
-    this.graphState.dockWidth = nextWidth;
+    if (this.surfaceMode === "iframe") {
+      this.setMainUIOverlayVisibility(true, this.getCurrentDockWidth());
+    }
+  }
+
+  private updateWidthReadout(): void {
+    const ownerDocument = this.renderRoot.ownerDocument ?? document;
+    this.renderRoot
+      .querySelector<HTMLElement>("[data-role='width-readout']")
+      ?.replaceChildren(ownerDocument.createTextNode(this.formatWidthLabel()));
+  }
+
+  private stopResize(shouldPersist = true): void {
+    if (!this.resizeCleanup) {
+      return;
+    }
+
+    this.renderRoot.querySelector<HTMLElement>(".panel")?.removeAttribute("data-resizing");
+    this.resizeCleanup();
+    this.resizeCleanup = null;
+
+    if (shouldPersist) {
+      this.persist();
+      this.render();
+    }
+  }
+
+  private startResize(event: PointerEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.stopResize(false);
+
+    const ownerWindow = this.renderRoot.ownerDocument?.defaultView ?? window;
+    const ownerDocument = this.renderRoot.ownerDocument ?? document;
+    const startClientX = event.clientX;
+    const startWidth = this.getCurrentDockWidth();
+    this.renderRoot.querySelector<HTMLElement>(".panel")?.setAttribute("data-resizing", "true");
+
+    const onMove = (moveEvent: PointerEvent): void => {
+      const delta = moveEvent.clientX - startClientX;
+      const nextWidth = this.clampWidth(startWidth - delta);
+      if (nextWidth === this.getCurrentDockWidth()) {
+        return;
+      }
+
+      this.setCurrentDockWidth(nextWidth);
+      this.applyDockWidth();
+      this.updateWidthReadout();
+    };
+
+    const onEnd = (): void => {
+      this.stopResize();
+    };
+
+    ownerDocument.body.style.userSelect = "none";
+    ownerDocument.body.style.cursor = "ew-resize";
+    ownerWindow.addEventListener("pointermove", onMove);
+    ownerWindow.addEventListener("pointerup", onEnd);
+    ownerWindow.addEventListener("pointercancel", onEnd);
+
+    this.resizeCleanup = () => {
+      ownerWindow.removeEventListener("pointermove", onMove);
+      ownerWindow.removeEventListener("pointerup", onEnd);
+      ownerWindow.removeEventListener("pointercancel", onEnd);
+      ownerDocument.body.style.userSelect = "";
+      ownerDocument.body.style.cursor = "";
+    };
+  }
+
+  private resetDockWidth(): void {
+    this.setCurrentDockWidth(DEFAULT_DOCK_WIDTH);
     this.persist();
-    void this.syncDockSurface();
+    this.applyDockWidth();
     this.render();
   }
 
@@ -445,12 +690,14 @@ class WhiteboardRefDockApp {
       void this.toggleDock();
     });
 
-    root.querySelector<HTMLElement>("[data-action='width-down']")?.addEventListener("click", () => {
-      this.changeWidth(-WIDTH_STEP);
+    root.querySelector<HTMLElement>("[data-action='start-resize']")?.addEventListener("pointerdown", (event) => {
+      this.startResize(event);
     });
 
-    root.querySelector<HTMLElement>("[data-action='width-up']")?.addEventListener("click", () => {
-      this.changeWidth(WIDTH_STEP);
+    root.querySelector<HTMLElement>("[data-action='start-resize']")?.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      this.stopResize(false);
+      this.resetDockWidth();
     });
 
     root.querySelectorAll<HTMLElement>("[data-filter]").forEach((button) => {
@@ -461,6 +708,18 @@ class WhiteboardRefDockApp {
         }
 
         this.statusFilter = nextFilter;
+        this.render();
+      });
+    });
+
+    root.querySelectorAll<HTMLElement>("[data-reference-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextFilter = button.dataset.referenceFilter as ReferenceFilter | undefined;
+        if (!nextFilter || nextFilter === this.referenceFilter) {
+          return;
+        }
+
+        this.referenceFilter = nextFilter;
         this.render();
       });
     });
@@ -557,7 +816,7 @@ class WhiteboardRefDockApp {
     return `
       <div class="empty-state">
         <h3>No items in this filter</h3>
-        <p>Try a different filter or create a new snapshot.</p>
+        <p>Try the other reference tab, adjust the status filter, or create a new snapshot.</p>
       </div>
     `;
   }
@@ -582,6 +841,7 @@ class WhiteboardRefDockApp {
     const snapshot = this.getActiveSnapshot();
     const visibleItems = this.getVisibleItems();
     const counts = this.getCounts(snapshot);
+    const referenceCounts = this.getReferenceCounts(snapshot);
     const sourcePlaceholder = this.sourceType === "page" ? "Page name" : "Keyword";
     const routeLabel = this.currentWhiteboard?.name ?? "No whiteboard";
     const isDockActive = Boolean(this.currentWhiteboard && this.graphState.dockVisible);
@@ -638,6 +898,7 @@ class WhiteboardRefDockApp {
           align-items: stretch;
           justify-content: flex-end;
           color: var(--text-light);
+          -webkit-app-region: no-drag;
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] {
@@ -645,6 +906,7 @@ class WhiteboardRefDockApp {
         }
 
         .panel {
+          position: relative;
           width: 100%;
           height: 100%;
           display: flex;
@@ -696,31 +958,30 @@ class WhiteboardRefDockApp {
 
         .header-row {
           justify-content: space-between;
+          align-items: flex-start;
+          gap: 12px;
         }
 
         .title-group {
           min-width: 0;
+          display: grid;
+          gap: 3px;
         }
 
         .eyebrow {
-          margin: 0 0 6px;
-          font-size: 10px;
+          margin: 0;
+          font-size: 9px;
           font-weight: 700;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.10em;
           text-transform: uppercase;
           color: var(--accent);
         }
 
-        .title {
-          font-size: 16px;
-          font-weight: 700;
-          line-height: 1.2;
-          margin: 0;
-        }
-
         .subtitle {
-          margin: 4px 0 0;
+          margin: 0;
           font-size: 12px;
+          font-weight: 600;
+          line-height: 1.25;
           color: var(--muted-light);
           white-space: nowrap;
           overflow: hidden;
@@ -746,6 +1007,8 @@ class WhiteboardRefDockApp {
           border: 1px solid transparent;
           border-radius: 10px;
           cursor: pointer;
+          white-space: nowrap;
+          flex-shrink: 0;
           transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
         }
 
@@ -778,6 +1041,15 @@ class WhiteboardRefDockApp {
           background: var(--chip-light);
           color: inherit;
           border: 1px solid transparent;
+        }
+
+        .tab-button {
+          flex: 1;
+          justify-content: center;
+          min-width: 0;
+          padding: 5px 8px;
+          font-size: 12px;
+          font-weight: 600;
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] .chip-button {
@@ -822,6 +1094,19 @@ class WhiteboardRefDockApp {
           gap: 8px;
         }
 
+        .reference-tabs {
+          display: inline-flex;
+          width: 100%;
+          padding: 4px;
+          border-radius: 12px;
+          background: rgba(148, 163, 184, 0.12);
+          gap: 4px;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .reference-tabs {
+          background: rgba(148, 163, 184, 0.10);
+        }
+
         .mode-switch {
           display: inline-flex;
           width: fit-content;
@@ -845,6 +1130,27 @@ class WhiteboardRefDockApp {
           color: var(--accent);
           font-size: 11px;
           font-weight: 600;
+        }
+
+        .width-chip {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 54px;
+          padding: 5px 9px;
+          border-radius: 999px;
+          border: 1px solid var(--panel-border-light);
+          background: rgba(255, 255, 255, 0.6);
+          font-size: 11px;
+          font-weight: 600;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+          word-break: keep-all;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .width-chip {
+          border-color: var(--panel-border-dark);
+          background: rgba(15, 23, 42, 0.5);
         }
 
         .status-bar {
@@ -967,6 +1273,26 @@ class WhiteboardRefDockApp {
           background: rgba(148, 163, 184, 0.12);
         }
 
+        .reference-chip.linked {
+          color: #1d4ed8;
+          background: rgba(37, 99, 235, 0.12);
+        }
+
+        .reference-chip.unlinked {
+          color: #047857;
+          background: rgba(16, 185, 129, 0.14);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .reference-chip.linked {
+          color: #93c5fd;
+          background: rgba(37, 99, 235, 0.18);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .reference-chip.unlinked {
+          color: #86efac;
+          background: rgba(16, 185, 129, 0.18);
+        }
+
         .item-actions {
           display: flex;
           gap: 8px;
@@ -1021,6 +1347,83 @@ class WhiteboardRefDockApp {
 
         .spacer {
           flex: 1;
+        }
+
+        .resize-handle {
+          position: absolute;
+          left: 0;
+          top: 0;
+          bottom: 0;
+          width: 14px;
+          transform: translateX(-50%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: ew-resize;
+          touch-action: none;
+          z-index: 2;
+        }
+
+        .resize-handle::before {
+          content: "";
+          width: 4px;
+          height: 56px;
+          border-radius: 999px;
+          background: rgba(37, 99, 235, 0.16);
+          box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.1);
+          transition: background 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+        }
+
+        .resize-handle:hover::before,
+        .resize-handle:active::before {
+          background: rgba(37, 99, 235, 0.4);
+          transform: scaleY(1.06);
+        }
+
+        .resize-handle::after {
+          content: "Drag";
+          position: absolute;
+          left: 50%;
+          bottom: 18px;
+          transform: translate(-50%, 6px);
+          padding: 3px 7px;
+          border-radius: 999px;
+          background: rgba(15, 23, 42, 0.78);
+          color: rgba(248, 250, 252, 0.92);
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 0.15s ease, transform 0.15s ease;
+          white-space: nowrap;
+        }
+
+        .resize-handle:hover::after,
+        .panel[data-resizing="true"] .resize-handle::after {
+          opacity: 1;
+          transform: translate(-50%, 0);
+        }
+
+        .panel[data-resizing="true"] .resize-handle::before {
+          background: rgba(37, 99, 235, 0.58);
+          transform: scaleY(1.12);
+          box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2), 0 0 0 8px rgba(37, 99, 235, 0.08);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .resize-handle::before {
+          background: rgba(96, 165, 250, 0.24);
+          box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.14);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .resize-handle::after {
+          background: rgba(15, 23, 42, 0.92);
+          color: rgba(241, 245, 249, 0.92);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .panel[data-resizing="true"] .resize-handle::before {
+          background: rgba(96, 165, 250, 0.62);
+          box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.2), 0 0 0 8px rgba(96, 165, 250, 0.08);
         }
 
         .diagnostics {
@@ -1090,11 +1493,18 @@ class WhiteboardRefDockApp {
         }
       </style>
       <div class="panel">
+        <div
+          class="resize-handle"
+          data-action="start-resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize RefDock"
+          title="Drag to resize. Double-click to reset."
+        ></div>
         <section class="header">
           <div class="header-row">
             <div class="title-group">
-              <p class="eyebrow">Whiteboard Review Dock</p>
-              <h1 class="title">Whiteboard RefDock</h1>
+              <p class="eyebrow">Review dock</p>
               <p class="subtitle">${escapeHtml(routeLabel)}</p>
             </div>
             <button class="ghost-button" data-action="toggle-dock">${isDockActive ? "Hide" : "Show"}</button>
@@ -1111,9 +1521,8 @@ class WhiteboardRefDockApp {
                 ? `<span class="snapshot-pill">${snapshot.items.length} items</span>`
                 : ""
             }
-            <button class="ghost-button" data-action="width-down">-</button>
-            <span class="hint">${this.graphState.dockWidth}px</span>
-            <button class="ghost-button" data-action="width-up">+</button>
+            <span class="width-chip" data-role="width-readout">${this.formatWidthLabel()}</span>
+            <span class="hint">Drag edge to resize</span>
           </div>
         </section>
 
@@ -1150,6 +1559,10 @@ class WhiteboardRefDockApp {
         </section>
 
         <section class="filters">
+          <div class="reference-tabs" role="tablist" aria-label="Reference type">
+            ${renderReferenceFilterButton("linked", "Linked", referenceCounts.linked, this.referenceFilter)}
+            ${renderReferenceFilterButton("unlinked", "Unlinked", referenceCounts.unlinked, this.referenceFilter)}
+          </div>
           <div class="filter-row">
             ${renderFilterButton("all", "All", counts.all, this.statusFilter)}
             ${renderFilterButton("unseen", "Unseen", counts.unseen, this.statusFilter)}
@@ -1179,6 +1592,7 @@ class WhiteboardRefDockApp {
                               <h2 class="item-title">${escapeHtml(item.label)}</h2>
                               <div class="item-meta">
                                 <span><span class="status-dot ${escapeAttribute(item.status)}"></span> ${escapeHtml(item.status)}</span>
+                                <span class="reference-chip ${escapeAttribute(item.referenceState)}">${escapeHtml(item.referenceState)}</span>
                                 <span>${escapeHtml(item.type)}</span>
                                 ${item.type === "block" && item.pageTitle ? `<span>${escapeHtml(item.pageTitle)}</span>` : ""}
                                 <span>${escapeHtml(item.pageName ?? item.blockUuid ?? "")}</span>
@@ -1207,8 +1621,9 @@ class WhiteboardRefDockApp {
   }
 }
 
-function escapeHtml(value: string): string {
-  return value
+function escapeHtml(value: unknown): string {
+  const safeValue = typeof value === "string" ? value : value == null ? "" : String(value);
+  return safeValue
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -1216,13 +1631,31 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-function escapeAttribute(value: string): string {
+function escapeAttribute(value: unknown): string {
   return escapeHtml(value);
 }
 
 function renderFilterButton(filter: StatusFilter, label: string, count: number, activeFilter: StatusFilter): string {
   return `
     <button class="chip-button ${filter === activeFilter ? "active" : ""}" data-filter="${filter}">
+      ${escapeHtml(label)} <span class="count">${count}</span>
+    </button>
+  `;
+}
+
+function renderReferenceFilterButton(
+  filter: ReferenceFilter,
+  label: string,
+  count: number,
+  activeFilter: ReferenceFilter,
+): string {
+  return `
+    <button
+      class="chip-button tab-button ${filter === activeFilter ? "active" : ""}"
+      data-reference-filter="${filter}"
+      role="tab"
+      aria-selected="${filter === activeFilter ? "true" : "false"}"
+    >
       ${escapeHtml(label)} <span class="count">${count}</span>
     </button>
   `;
@@ -1275,6 +1708,17 @@ async function main(): Promise<void> {
     throw new Error("App root was not found.");
   }
 
+  const settingsCapableLogseq = logseq as typeof logseq & {
+    useSettingsSchema?: (schema: typeof SETTINGS_SCHEMA) => void;
+    onSettingsChanged?: (handler: (newSettings: Record<string, unknown>, oldSettings: Record<string, unknown>) => void) => void;
+  };
+
+  try {
+    settingsCapableLogseq.useSettingsSchema?.(SETTINGS_SCHEMA);
+  } catch (error) {
+    console.warn("whiteboard-refdock settings schema registration failed", error);
+  }
+
   const app = new WhiteboardRefDockApp(root);
 
   logseq.provideModel({
@@ -1324,6 +1768,10 @@ async function main(): Promise<void> {
 
   logseq.App.onThemeModeChanged(({ mode }) => {
     app.setThemeMode(mode);
+  });
+
+  settingsCapableLogseq.onSettingsChanged?.(() => {
+    void app.refreshContext();
   });
 
   await app.init();
