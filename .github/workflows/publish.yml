@@ -1,0 +1,49 @@
+name: Build plugin release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_NAME: logseq-whiteboard-refdock
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Package release zip
+        run: |
+          mkdir -p "${PLUGIN_NAME}"
+          cp README.md LICENSE package.json icon.png icon.svg "${PLUGIN_NAME}/"
+          cp -R dist "${PLUGIN_NAME}/"
+          if [ -d assets ]; then
+            cp -R assets "${PLUGIN_NAME}/"
+          fi
+          zip -r "${PLUGIN_NAME}.zip" "${PLUGIN_NAME}"
+
+      - name: Attach release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            logseq-whiteboard-refdock.zip
+            package.json

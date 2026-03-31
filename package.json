@@ -1,15 +1,30 @@
 {
   "name": "logseq-whiteboard-refdock",
   "version": "0.1.0",
-  "description": "Review saved unlinked-reference snapshots while working on a Logseq whiteboard.",
-  "author": "hsk",
+  "description": "Review saved linked and unlinked reference snapshots in a dedicated dock while working on a Logseq whiteboard.",
+  "author": "Felix Huo",
   "license": "MIT",
   "private": true,
   "effect": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FelixHuoEZ/logseq-whiteboard-refdock.git"
+  },
+  "homepage": "https://github.com/FelixHuoEZ/logseq-whiteboard-refdock",
+  "bugs": {
+    "url": "https://github.com/FelixHuoEZ/logseq-whiteboard-refdock/issues"
+  },
+  "keywords": [
+    "logseq",
+    "logseq-plugin",
+    "whiteboard",
+    "references",
+    "knowledge-management"
+  ],
   "logseq": {
     "id": "logseq-whiteboard-refdock",
     "title": "Whiteboard RefDock",
-    "icon": "./icon.svg",
+    "icon": "./icon.png",
     "main": "./dist/index.html"
   },
   "scripts": {

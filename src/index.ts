@@ -67,7 +67,7 @@ class WhiteboardRefDockApp {
   private currentWhiteboard: WhiteboardInfo | null = null;
   private sourceType: SnapshotSourceType = "page";
   private sourceValue = "";
-  private referenceFilter: ReferenceFilter = "unlinked";
+  private referenceFilter: ReferenceFilter = "linked";
   private statusFilter: StatusFilter = "all";
   private message = "";
   private error = "";
@@ -302,12 +302,12 @@ class WhiteboardRefDockApp {
 
   private selectDefaultReferenceFilter(snapshot: Snapshot | null): void {
     if (!snapshot) {
-      this.referenceFilter = "unlinked";
+      this.referenceFilter = "linked";
       return;
     }
 
     const counts = this.getReferenceCounts(snapshot);
-    this.referenceFilter = counts.unlinked > 0 ? "unlinked" : "linked";
+    this.referenceFilter = counts.linked > 0 ? "linked" : "unlinked";
   }
 
   private getHostDocument(): Document | null {
@@ -816,14 +816,18 @@ class WhiteboardRefDockApp {
           return;
         }
 
-        if (item.pageName) {
+        event.dataTransfer.clearData();
+
+        if (item.type === "page" && item.pageName) {
           event.dataTransfer.setData("page-name", item.pageName);
-          event.dataTransfer.setData("text/plain", item.pageName);
+          // Fall back to a native page ref if the custom transfer type is ignored.
+          event.dataTransfer.setData("text/plain", `[[${item.pageName}]]`);
         }
 
-        if (item.blockUuid) {
+        if (item.type === "block" && item.blockUuid) {
           event.dataTransfer.setData("block-uuid", item.blockUuid);
-          event.dataTransfer.setData("text/plain", item.blockUuid);
+          // Fall back to a native block ref instead of exposing the raw UUID as text.
+          event.dataTransfer.setData("text/plain", `((${item.blockUuid}))`);
         }
 
         event.dataTransfer.effectAllowed = "copy";
