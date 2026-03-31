@@ -1719,14 +1719,14 @@ function renderToolbarDockIconTemplate(): string {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          width: 1.35rem;
-          height: 1.35rem;
-          opacity: 0.82;
+          width: 1.78rem;
+          height: 1.78rem;
+          opacity: 0.98;
         "
       >
         <svg
-          width="14"
-          height="14"
+          width="18"
+          height="18"
           viewBox="0 0 16 16"
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
@@ -1742,30 +1742,35 @@ function renderToolbarDockIconTemplate(): string {
             stroke-width="1.35"
             stroke-linejoin="round"
           />
+          <rect
+            x="10.05"
+            y="3.35"
+            width="2.55"
+            height="9.3"
+            rx="1.1"
+            fill="currentColor"
+            opacity="0.34"
+          />
           <path
-            d="M9.5 2.9V13.1"
+            d="M10 3.2V12.8"
             stroke="currentColor"
-            stroke-width="1.35"
+            stroke-width="1.55"
             stroke-linecap="round"
             stroke-linejoin="round"
           />
           <path
-            d="M4.6 5.2H6.9"
+            d="M4.85 5.2L8.25 8L4.85 10.8"
             stroke="currentColor"
-            stroke-width="1.2"
+            stroke-width="1.8"
             stroke-linecap="round"
+            stroke-linejoin="round"
           />
           <path
-            d="M4.6 8H6.9"
+            d="M4.2 8H7.9"
             stroke="currentColor"
             stroke-width="1.2"
             stroke-linecap="round"
-          />
-          <path
-            d="M4.6 10.8H6.2"
-            stroke="currentColor"
-            stroke-width="1.2"
-            stroke-linecap="round"
+            opacity="0.92"
           />
         </svg>
       </span>
