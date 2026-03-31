@@ -2,7 +2,10 @@
   "name": "logseq-whiteboard-refdock",
   "version": "0.1.0",
   "description": "Review saved linked and unlinked reference snapshots in a dedicated dock while working on a Logseq whiteboard.",
-  "author": "Felix Huo",
+  "author": "FelixHuoEZ",
+  "contributors": [
+    "Codex"
+  ],
   "license": "MIT",
   "private": true,
   "effect": true,

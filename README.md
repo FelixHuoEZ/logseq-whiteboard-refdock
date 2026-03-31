@@ -59,6 +59,11 @@ Whiteboard RefDock does not send graph data to external services.
 
 All snapshots and item state are stored locally in the Logseq plugin state for the current graph.
 
+## Authors
+
+- FelixHuoEZ
+- Codex
+
 ## Development
 
 ```bash
