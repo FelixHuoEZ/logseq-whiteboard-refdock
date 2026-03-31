@@ -112,6 +112,42 @@ class WhiteboardRefDockApp {
     this.debugSurface("toggleDock:after");
   }
 
+  async revealDock(): Promise<void> {
+    await this.refreshGraphState();
+    this.currentWhiteboard = await getCurrentWhiteboard();
+
+    if (!this.currentWhiteboard) {
+      const routePath = this.getCurrentRoutePath();
+      this.message = routePath
+        ? `RefDock could not detect a whiteboard on route ${routePath}.`
+        : "Open a whiteboard to use RefDock.";
+      this.error = "";
+      await this.syncDockSurface();
+      this.render();
+      await logseq.UI.showMsg(
+        routePath
+          ? `Whiteboard RefDock: no whiteboard detected on ${routePath}.`
+          : "Whiteboard RefDock: open a whiteboard first.",
+        "warning",
+      );
+      return;
+    }
+
+    if (!this.graphState.dockVisible) {
+      this.graphState.dockVisible = true;
+      this.persist();
+    }
+
+    await this.syncDockSurface();
+    const snapshot = this.getActiveSnapshot();
+    this.error = "";
+    this.message = snapshot
+      ? `Dock opened. ${snapshot.items.length} saved items loaded.`
+      : "Dock opened.";
+    this.render();
+    await logseq.UI.showMsg("Whiteboard RefDock opened.", "success");
+  }
+
   async refreshDock(): Promise<void> {
     await this.refreshGraphState();
     this.currentWhiteboard = await getCurrentWhiteboard();
@@ -143,7 +179,7 @@ class WhiteboardRefDockApp {
     this.error = "";
     this.message = snapshot
       ? `Dock refreshed. ${snapshot.items.length} saved items loaded.`
-      : "Dock refreshed and opened.";
+      : "Dock refreshed.";
     this.render();
     await logseq.UI.showMsg("Whiteboard RefDock refreshed.", "success");
   }
@@ -690,6 +726,10 @@ class WhiteboardRefDockApp {
       void this.toggleDock();
     });
 
+    root.querySelector<HTMLElement>("[data-action='refresh-dock']")?.addEventListener("click", () => {
+      void this.refreshDock();
+    });
+
     root.querySelector<HTMLElement>("[data-action='start-resize']")?.addEventListener("pointerdown", (event) => {
       this.startResize(event);
     });
@@ -960,6 +1000,13 @@ class WhiteboardRefDockApp {
           justify-content: space-between;
           align-items: flex-start;
           gap: 12px;
+        }
+
+        .header-actions {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          flex-shrink: 0;
         }
 
         .title-group {
@@ -1507,7 +1554,10 @@ class WhiteboardRefDockApp {
               <p class="eyebrow">Review dock</p>
               <p class="subtitle">${escapeHtml(routeLabel)}</p>
             </div>
-            <button class="ghost-button" data-action="toggle-dock">${isDockActive ? "Hide" : "Show"}</button>
+            <div class="header-actions">
+              <button class="ghost-button" data-action="refresh-dock">Refresh</button>
+              <button class="ghost-button" data-action="toggle-dock">${isDockActive ? "Hide" : "Show"}</button>
+            </div>
           </div>
           <div class="status-row">
             <span class="hint">${
@@ -1661,9 +1711,9 @@ function renderReferenceFilterButton(
   `;
 }
 
-function renderRefreshToolbarIconTemplate(): string {
+function renderToolbarDockIconTemplate(): string {
   return `
-    <a class="button" data-on-click="refreshDock" title="Refresh Whiteboard RefDock" aria-label="Refresh Whiteboard RefDock">
+    <a class="button" data-on-click="toggleDock" title="Toggle Whiteboard RefDock" aria-label="Toggle Whiteboard RefDock">
       <span
         style="
           display: inline-flex;
@@ -1682,19 +1732,40 @@ function renderRefreshToolbarIconTemplate(): string {
           xmlns="http://www.w3.org/2000/svg"
           aria-hidden="true"
         >
+          <rect
+            x="2.25"
+            y="2.25"
+            width="11.5"
+            height="11.5"
+            rx="2"
+            stroke="currentColor"
+            stroke-width="1.35"
+            stroke-linejoin="round"
+          />
           <path
-            d="M12.9 8A4.9 4.9 0 1 1 11.47 4.53"
+            d="M9.5 2.9V13.1"
             stroke="currentColor"
             stroke-width="1.35"
             stroke-linecap="round"
             stroke-linejoin="round"
           />
           <path
-            d="M10.9 3.35H13V5.45"
+            d="M4.6 5.2H6.9"
             stroke="currentColor"
-            stroke-width="1.35"
+            stroke-width="1.2"
             stroke-linecap="round"
-            stroke-linejoin="round"
+          />
+          <path
+            d="M4.6 8H6.9"
+            stroke="currentColor"
+            stroke-width="1.2"
+            stroke-linecap="round"
+          />
+          <path
+            d="M4.6 10.8H6.2"
+            stroke="currentColor"
+            stroke-width="1.2"
+            stroke-linecap="round"
           />
         </svg>
       </span>
@@ -1725,6 +1796,9 @@ async function main(): Promise<void> {
     toggleDock() {
       void app.toggleDock();
     },
+    revealDock() {
+      void app.revealDock();
+    },
     refreshDock() {
       void app.refreshDock();
     },
@@ -1732,7 +1806,7 @@ async function main(): Promise<void> {
 
   logseq.App.registerUIItem("toolbar", {
     key: TOOLBAR_KEY,
-    template: renderRefreshToolbarIconTemplate(),
+    template: renderToolbarDockIconTemplate(),
   });
 
   logseq.App.registerCommandPalette(
