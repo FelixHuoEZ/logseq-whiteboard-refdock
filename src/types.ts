@@ -27,6 +27,22 @@ export interface SnapshotDiagnostics {
   lines: string[];
 }
 
+export interface ReviewStateItem {
+  itemId: string;
+  status: ItemStatus;
+  updatedAt: number;
+}
+
+export interface ReviewStateRecord {
+  reviewKey: string;
+  whiteboardId: string;
+  sourceType: SnapshotSourceType;
+  sourceValue: string;
+  normalizedSourceValue: string;
+  updatedAt: number;
+  items: Record<string, ReviewStateItem>;
+}
+
 export interface Snapshot {
   id: string;
   whiteboardId: string;
@@ -43,8 +59,11 @@ export interface GraphState {
   dockVisible: boolean;
   dockWidth: number;
   dockWidthsByWhiteboard: Record<string, number>;
-  snapshotsByWhiteboard: Record<string, Snapshot>;
-  scrollByWhiteboard: Record<string, number>;
+  savedSourcesByWhiteboard: Record<string, string[]>;
+  activeReviewKeyByWhiteboard: Record<string, string>;
+  snapshotsByReviewKey: Record<string, Snapshot>;
+  reviewStateByReviewKey: Record<string, ReviewStateRecord>;
+  scrollByReviewKey: Record<string, number>;
 }
 
 export interface CandidatePageContext {

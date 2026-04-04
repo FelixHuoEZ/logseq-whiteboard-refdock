@@ -1,11 +1,12 @@
 import "@logseq/libs";
 
 import { createSnapshotFromKeyword, createSnapshotFromPage, getCurrentWhiteboard } from "./query";
-import { DEFAULT_DOCK_WIDTH, getGraphStorageKey, loadGraphState, saveGraphState } from "./storage";
+import { DEFAULT_DOCK_WIDTH, buildReviewKey, getGraphStorageKey, loadGraphState, normalizeSourceValue, saveGraphState } from "./storage";
 import type {
   GraphState,
   ItemStatus,
   ReferenceState,
+  ReviewStateRecord,
   Snapshot,
   SnapshotItem,
   SnapshotSourceType,
@@ -96,6 +97,8 @@ class WhiteboardRefDockApp {
 
   async refreshContext(): Promise<void> {
     this.currentWhiteboard = await getCurrentWhiteboard();
+    this.syncActiveReviewKey();
+    this.syncSourceInputFromActiveSnapshot();
     this.setCurrentDockWidth(this.getCurrentDockWidth());
     this.selectDefaultReferenceFilter(this.getActiveSnapshot());
     this.persist();
@@ -115,6 +118,8 @@ class WhiteboardRefDockApp {
   async revealDock(): Promise<void> {
     await this.refreshGraphState();
     this.currentWhiteboard = await getCurrentWhiteboard();
+    this.syncActiveReviewKey();
+    this.syncSourceInputFromActiveSnapshot();
 
     if (!this.currentWhiteboard) {
       const routePath = this.getCurrentRoutePath();
@@ -151,6 +156,8 @@ class WhiteboardRefDockApp {
   async refreshDock(): Promise<void> {
     await this.refreshGraphState();
     this.currentWhiteboard = await getCurrentWhiteboard();
+    this.syncActiveReviewKey();
+    this.syncSourceInputFromActiveSnapshot();
 
     if (!this.currentWhiteboard) {
       const routePath = this.getCurrentRoutePath();
@@ -232,12 +239,153 @@ class WhiteboardRefDockApp {
     return `${this.getCurrentDockWidth()}px`;
   }
 
-  private getActiveSnapshot(): Snapshot | null {
+  private getReviewKey(snapshot: Pick<Snapshot, "whiteboardId" | "sourceType" | "sourceValue">): string {
+    return buildReviewKey(snapshot.whiteboardId, snapshot.sourceType, snapshot.sourceValue);
+  }
+
+  private getSavedReviewKeysForWhiteboard(whiteboardId: string): string[] {
+    const keys = this.graphState.savedSourcesByWhiteboard[whiteboardId] ?? [];
+    return keys.filter((reviewKey) => Boolean(this.graphState.snapshotsByReviewKey[reviewKey]));
+  }
+
+  private syncActiveReviewKey(): void {
+    if (!this.currentWhiteboard) {
+      return;
+    }
+
+    const reviewKeys = this.getSavedReviewKeysForWhiteboard(this.currentWhiteboard.id);
+    if (reviewKeys.length === 0) {
+      delete this.graphState.activeReviewKeyByWhiteboard[this.currentWhiteboard.id];
+      return;
+    }
+
+    const activeReviewKey = this.graphState.activeReviewKeyByWhiteboard[this.currentWhiteboard.id];
+    this.graphState.activeReviewKeyByWhiteboard[this.currentWhiteboard.id] =
+      activeReviewKey && reviewKeys.includes(activeReviewKey) ? activeReviewKey : reviewKeys[0];
+  }
+
+  private getActiveReviewKey(): string | null {
     if (!this.currentWhiteboard) {
       return null;
     }
 
-    return this.graphState.snapshotsByWhiteboard[this.currentWhiteboard.id] ?? null;
+    const activeReviewKey = this.graphState.activeReviewKeyByWhiteboard[this.currentWhiteboard.id];
+    return activeReviewKey && this.graphState.snapshotsByReviewKey[activeReviewKey] ? activeReviewKey : null;
+  }
+
+  private getActiveSnapshot(): Snapshot | null {
+    const activeReviewKey = this.getActiveReviewKey();
+    if (!activeReviewKey) {
+      return null;
+    }
+
+    return this.graphState.snapshotsByReviewKey[activeReviewKey] ?? null;
+  }
+
+  private getSavedSourceSnapshots(): Array<{ reviewKey: string; snapshot: Snapshot }> {
+    if (!this.currentWhiteboard) {
+      return [];
+    }
+
+    return this.getSavedReviewKeysForWhiteboard(this.currentWhiteboard.id)
+      .map((reviewKey) => {
+        const snapshot = this.graphState.snapshotsByReviewKey[reviewKey];
+        return snapshot ? { reviewKey, snapshot } : null;
+      })
+      .filter((entry): entry is { reviewKey: string; snapshot: Snapshot } => entry !== null);
+  }
+
+  private syncSourceInputFromActiveSnapshot(): void {
+    const snapshot = this.getActiveSnapshot();
+    if (!snapshot) {
+      return;
+    }
+
+    this.sourceType = snapshot.sourceType;
+    this.sourceValue = snapshot.sourceValue;
+  }
+
+  private setActiveReviewKey(reviewKey: string): void {
+    if (!this.currentWhiteboard) {
+      return;
+    }
+
+    const reviewKeys = this.getSavedReviewKeysForWhiteboard(this.currentWhiteboard.id);
+    if (!reviewKeys.includes(reviewKey)) {
+      return;
+    }
+
+    this.graphState.activeReviewKeyByWhiteboard[this.currentWhiteboard.id] = reviewKey;
+    this.syncSourceInputFromActiveSnapshot();
+    this.statusFilter = "all";
+    this.selectDefaultReferenceFilter(this.getActiveSnapshot());
+    this.persist();
+    this.render();
+    this.restoreScrollPosition();
+  }
+
+  private upsertSavedSource(snapshot: Snapshot): string {
+    const reviewKey = this.getReviewKey(snapshot);
+    const reviewKeys = this.getSavedReviewKeysForWhiteboard(snapshot.whiteboardId).filter((entry) => entry !== reviewKey);
+    this.graphState.savedSourcesByWhiteboard[snapshot.whiteboardId] = [reviewKey, ...reviewKeys];
+    this.graphState.activeReviewKeyByWhiteboard[snapshot.whiteboardId] = reviewKey;
+    return reviewKey;
+  }
+
+  private getOrCreateReviewState(snapshot: Pick<Snapshot, "whiteboardId" | "sourceType" | "sourceValue">): ReviewStateRecord {
+    const reviewKey = this.getReviewKey(snapshot);
+    const existing = this.graphState.reviewStateByReviewKey[reviewKey];
+    if (existing) {
+      return existing;
+    }
+
+    const created: ReviewStateRecord = {
+      reviewKey,
+      whiteboardId: snapshot.whiteboardId,
+      sourceType: snapshot.sourceType,
+      sourceValue: snapshot.sourceValue,
+      normalizedSourceValue: normalizeSourceValue(snapshot.sourceValue),
+      updatedAt: Date.now(),
+      items: {},
+    };
+    this.graphState.reviewStateByReviewKey[reviewKey] = created;
+    return created;
+  }
+
+  private mergeSnapshotWithReviewState(snapshot: Snapshot): Snapshot {
+    const reviewState = this.graphState.reviewStateByReviewKey[this.getReviewKey(snapshot)];
+    if (!reviewState) {
+      return snapshot;
+    }
+
+    return {
+      ...snapshot,
+      items: snapshot.items.map((item) => ({
+        ...item,
+        status: reviewState.items[item.id]?.status ?? "unseen",
+      })),
+    };
+  }
+
+  private recordItemStatus(snapshot: Snapshot, itemId: string, status: ItemStatus): void {
+    const reviewState = this.getOrCreateReviewState(snapshot);
+    const timestamp = Date.now();
+
+    if (status === "unseen") {
+      delete reviewState.items[itemId];
+    } else {
+      reviewState.items[itemId] = {
+        itemId,
+        status,
+        updatedAt: timestamp,
+      };
+    }
+
+    reviewState.updatedAt = timestamp;
+
+    if (Object.keys(reviewState.items).length === 0) {
+      delete this.graphState.reviewStateByReviewKey[reviewState.reviewKey];
+    }
   }
 
   private getVisibleItems(): SnapshotItem[] {
@@ -525,12 +673,16 @@ class WhiteboardRefDockApp {
         this.sourceType === "page"
           ? await createSnapshotFromPage(whiteboard, sourceValue)
           : await createSnapshotFromKeyword(whiteboard, sourceValue);
+      const mergedSnapshot = this.mergeSnapshotWithReviewState(snapshot);
+      const reviewKey = this.upsertSavedSource(mergedSnapshot);
 
-      this.graphState.snapshotsByWhiteboard[whiteboard.id] = snapshot;
-      this.graphState.scrollByWhiteboard[whiteboard.id] = 0;
-      this.selectDefaultReferenceFilter(snapshot);
+      this.graphState.snapshotsByReviewKey[reviewKey] = mergedSnapshot;
+      this.graphState.scrollByReviewKey[reviewKey] = 0;
+      this.syncSourceInputFromActiveSnapshot();
+      this.statusFilter = "all";
+      this.selectDefaultReferenceFilter(mergedSnapshot);
       this.persist();
-      this.message = `Saved ${snapshot.items.length} snapshot items.`;
+      this.message = `Saved ${mergedSnapshot.items.length} snapshot items.`;
     } catch (error) {
       const message = getRenderableErrorMessage(error);
       this.setError(
@@ -550,10 +702,27 @@ class WhiteboardRefDockApp {
       return;
     }
 
-    delete this.graphState.snapshotsByWhiteboard[this.currentWhiteboard.id];
-    delete this.graphState.scrollByWhiteboard[this.currentWhiteboard.id];
+    const activeReviewKey = this.getActiveReviewKey();
+    if (!activeReviewKey) {
+      return;
+    }
+
+    delete this.graphState.snapshotsByReviewKey[activeReviewKey];
+    delete this.graphState.scrollByReviewKey[activeReviewKey];
+
+    const remainingReviewKeys = this.getSavedReviewKeysForWhiteboard(this.currentWhiteboard.id).filter((reviewKey) => reviewKey !== activeReviewKey);
+    if (remainingReviewKeys.length > 0) {
+      this.graphState.savedSourcesByWhiteboard[this.currentWhiteboard.id] = remainingReviewKeys;
+      this.graphState.activeReviewKeyByWhiteboard[this.currentWhiteboard.id] = remainingReviewKeys[0];
+    } else {
+      delete this.graphState.savedSourcesByWhiteboard[this.currentWhiteboard.id];
+      delete this.graphState.activeReviewKeyByWhiteboard[this.currentWhiteboard.id];
+    }
+
+    this.syncSourceInputFromActiveSnapshot();
+    this.selectDefaultReferenceFilter(this.getActiveSnapshot());
     this.persist();
-    this.message = "Snapshot cleared.";
+    this.message = "Active source removed.";
     this.error = "";
     this.render();
   }
@@ -576,12 +745,17 @@ class WhiteboardRefDockApp {
     }
 
     item.status = status;
+    this.recordItemStatus(snapshot, item.id, status);
     this.persist();
     this.render();
   }
 
   private async openItem(itemId: string): Promise<void> {
     const snapshot = this.getActiveSnapshot();
+    if (!snapshot) {
+      return;
+    }
+
     const item = snapshot?.items.find((entry) => entry.id === itemId);
     if (!item?.pageName) {
       return;
@@ -589,6 +763,7 @@ class WhiteboardRefDockApp {
 
     if (item.status === "unseen") {
       item.status = "seen";
+      this.recordItemStatus(snapshot, item.id, "seen");
       this.persist();
     }
 
@@ -684,16 +859,18 @@ class WhiteboardRefDockApp {
   }
 
   private saveScrollPosition(scrollTop: number): void {
-    if (!this.currentWhiteboard) {
+    const activeReviewKey = this.getActiveReviewKey();
+    if (!activeReviewKey) {
       return;
     }
 
-    this.graphState.scrollByWhiteboard[this.currentWhiteboard.id] = scrollTop;
+    this.graphState.scrollByReviewKey[activeReviewKey] = scrollTop;
     this.persist();
   }
 
   private restoreScrollPosition(): void {
-    if (!this.currentWhiteboard) {
+    const activeReviewKey = this.getActiveReviewKey();
+    if (!activeReviewKey) {
       return;
     }
 
@@ -702,7 +879,7 @@ class WhiteboardRefDockApp {
       return;
     }
 
-    const scrollTop = this.graphState.scrollByWhiteboard[this.currentWhiteboard.id] ?? 0;
+    const scrollTop = this.graphState.scrollByReviewKey[activeReviewKey] ?? 0;
     scrollContainer.scrollTop = scrollTop;
   }
 
@@ -715,6 +892,15 @@ class WhiteboardRefDockApp {
 
     root.querySelector<HTMLElement>("[data-action='clear-snapshot']")?.addEventListener("click", () => {
       this.clearSnapshot();
+    });
+
+    root.querySelectorAll<HTMLElement>("[data-review-key]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const reviewKey = button.dataset.reviewKey;
+        if (reviewKey) {
+          this.setActiveReviewKey(reviewKey);
+        }
+      });
     });
 
     root.querySelector<HTMLElement>("[data-action='toggle-diagnostics']")?.addEventListener("click", () => {
@@ -811,6 +997,10 @@ class WhiteboardRefDockApp {
       element.addEventListener("dragstart", (event) => {
         const itemId = element.dataset.itemDrag;
         const snapshot = this.getActiveSnapshot();
+        if (!snapshot) {
+          return;
+        }
+
         const item = snapshot?.items.find((entry) => entry.id === itemId);
         if (!item || !event.dataTransfer) {
           return;
@@ -834,6 +1024,7 @@ class WhiteboardRefDockApp {
 
         if (item.status === "unseen") {
           item.status = "seen";
+          this.recordItemStatus(snapshot, item.id, "seen");
           this.persist();
         }
       });
@@ -883,10 +1074,19 @@ class WhiteboardRefDockApp {
 
   render(): void {
     const snapshot = this.getActiveSnapshot();
+    const activeReviewKey = this.getActiveReviewKey();
+    const savedSourceEntries = this.getSavedSourceSnapshots();
     const visibleItems = this.getVisibleItems();
     const counts = this.getCounts(snapshot);
     const referenceCounts = this.getReferenceCounts(snapshot);
     const sourcePlaceholder = this.sourceType === "page" ? "Page name" : "Keyword";
+    const trimmedSourceValue = this.sourceValue.trim();
+    const draftReviewKey =
+      this.currentWhiteboard && trimmedSourceValue
+        ? buildReviewKey(this.currentWhiteboard.id, this.sourceType, trimmedSourceValue)
+        : null;
+    const createSnapshotLabel =
+      this.busy ? "Saving..." : draftReviewKey && this.graphState.snapshotsByReviewKey[draftReviewKey] ? "Refresh Snapshot" : "Create Snapshot";
     const routeLabel = this.currentWhiteboard?.name ?? "No whiteboard";
     const isDockActive = Boolean(this.currentWhiteboard && this.graphState.dockVisible);
     const surfaceHint =
@@ -972,6 +1172,7 @@ class WhiteboardRefDockApp {
         }
 
         .header,
+        .sources,
         .controls,
         .filters,
         .status-bar {
@@ -980,6 +1181,7 @@ class WhiteboardRefDockApp {
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] .header,
+        #${APP_ROOT_ID}[data-theme="dark"] .sources,
         #${APP_ROOT_ID}[data-theme="dark"] .controls,
         #${APP_ROOT_ID}[data-theme="dark"] .filters,
         #${APP_ROOT_ID}[data-theme="dark"] .status-bar {
@@ -1138,6 +1340,148 @@ class WhiteboardRefDockApp {
           display: grid;
           gap: 10px;
           background: linear-gradient(180deg, rgba(148, 163, 184, 0.06), rgba(148, 163, 184, 0.02));
+        }
+
+        .sources {
+          display: grid;
+          gap: 10px;
+          background: linear-gradient(180deg, rgba(37, 99, 235, 0.03), rgba(37, 99, 235, 0.01));
+        }
+
+        .section-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+
+        .section-title {
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--muted-light);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .section-title {
+          color: var(--muted-dark);
+        }
+
+        .source-list {
+          display: grid;
+          gap: 8px;
+          max-height: 168px;
+          overflow: auto;
+          padding-right: 2px;
+        }
+
+        .source-row {
+          width: 100%;
+          display: grid;
+          gap: 7px;
+          border: 1px solid var(--panel-border-light);
+          border-radius: 12px;
+          padding: 10px 11px;
+          background: rgba(255, 255, 255, 0.62);
+          color: inherit;
+          text-align: left;
+          cursor: pointer;
+          transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .source-row {
+          border-color: var(--panel-border-dark);
+          background: rgba(15, 23, 42, 0.54);
+        }
+
+        .source-row:hover {
+          transform: translateX(-1px);
+          border-color: rgba(37, 99, 235, 0.28);
+        }
+
+        .source-row.active {
+          border-color: rgba(37, 99, 235, 0.55);
+          background: rgba(37, 99, 235, 0.10);
+          box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .source-row.active {
+          background: rgba(37, 99, 235, 0.16);
+        }
+
+        .source-row-head,
+        .source-row-meta {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          justify-content: space-between;
+        }
+
+        .source-row-meta {
+          flex-wrap: wrap;
+          justify-content: flex-start;
+        }
+
+        .source-label {
+          min-width: 0;
+          font-size: 13px;
+          font-weight: 700;
+          line-height: 1.35;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .source-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 3px 7px;
+          border-radius: 999px;
+          background: rgba(148, 163, 184, 0.12);
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--muted-light);
+          white-space: nowrap;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .source-chip {
+          color: var(--muted-dark);
+          background: rgba(148, 163, 184, 0.14);
+        }
+
+        .source-chip.type-page {
+          color: #1d4ed8;
+          background: rgba(37, 99, 235, 0.12);
+        }
+
+        .source-chip.type-keyword {
+          color: #7c3aed;
+          background: rgba(124, 58, 237, 0.12);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .source-chip.type-page {
+          color: #bfdbfe;
+          background: rgba(37, 99, 235, 0.20);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .source-chip.type-keyword {
+          color: #ddd6fe;
+          background: rgba(124, 58, 237, 0.22);
+        }
+
+        .source-empty {
+          border: 1px dashed var(--panel-border-light);
+          border-radius: 12px;
+          padding: 12px;
+          font-size: 12px;
+          color: var(--muted-light);
+          text-align: center;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .source-empty {
+          border-color: var(--panel-border-dark);
+          color: var(--muted-dark);
         }
 
         .controls-grid {
@@ -1580,6 +1924,37 @@ class WhiteboardRefDockApp {
           </div>
         </section>
 
+        <section class="sources">
+          <div class="section-row">
+            <span class="section-title">Saved sources</span>
+            <span class="hint">${savedSourceEntries.length} saved</span>
+          </div>
+          <div class="source-list">
+            ${
+              savedSourceEntries.length === 0
+                ? `<div class="source-empty">No saved sources on this whiteboard yet.</div>`
+                : savedSourceEntries
+                    .map(({ reviewKey, snapshot: sourceSnapshot }) => {
+                      const sourceReferenceCounts = this.getReferenceCounts(sourceSnapshot);
+                      return `
+                        <button class="source-row ${reviewKey === activeReviewKey ? "active" : ""}" data-review-key="${escapeAttribute(reviewKey)}">
+                          <div class="source-row-head">
+                            <span class="source-label">${escapeHtml(sourceSnapshot.sourceValue)}</span>
+                            <span class="source-chip">${sourceSnapshot.items.length} items</span>
+                          </div>
+                          <div class="source-row-meta">
+                            <span class="source-chip type-${escapeAttribute(sourceSnapshot.sourceType)}">${escapeHtml(sourceSnapshot.sourceType)}</span>
+                            <span class="source-chip">${sourceReferenceCounts.linked} linked</span>
+                            <span class="source-chip">${sourceReferenceCounts.unlinked} unlinked</span>
+                          </div>
+                        </button>
+                      `;
+                    })
+                    .join("")
+            }
+          </div>
+        </section>
+
         <section class="controls">
           <div class="control-row">
             <div class="mode-switch">
@@ -1595,18 +1970,16 @@ class WhiteboardRefDockApp {
               placeholder="${escapeAttribute(sourcePlaceholder)}"
             />
             <div class="control-row">
-              <button class="primary-button" data-action="create-snapshot" ${this.busy ? "disabled" : ""}>
-                ${this.busy ? "Saving..." : "Create Snapshot"}
-              </button>
-              <button class="ghost-button" data-action="clear-snapshot">Clear</button>
+              <button class="primary-button" data-action="create-snapshot" ${this.busy ? "disabled" : ""}>${createSnapshotLabel}</button>
+              <button class="ghost-button" data-action="clear-snapshot">Remove Active</button>
             </div>
             <div class="message ${this.error ? "error" : ""}">
               ${escapeHtml(
                 this.error ||
                   this.message ||
                   (this.sourceType === "page"
-                    ? "Page mode uses Logseq's page unlinked references path."
-                    : "Keyword mode uses Logseq's keyword search path and saves a snapshot."),
+                    ? "Page mode saves or refreshes a page source on this whiteboard."
+                    : "Keyword mode saves or refreshes a keyword source on this whiteboard."),
               )}
             </div>
           </div>

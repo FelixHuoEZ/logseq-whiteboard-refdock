@@ -1,7 +1,23 @@
-import type { GraphState, ItemStatus, ReferenceState, Snapshot, SnapshotItem, SnapshotSourceType } from "./types";
+import type {
+  GraphState,
+  ItemStatus,
+  ReferenceState,
+  ReviewStateItem,
+  ReviewStateRecord,
+  Snapshot,
+  SnapshotItem,
+  SnapshotSourceType,
+} from "./types";
 
-const STORAGE_PREFIX = "whiteboard-refdock:v1";
+const STORAGE_PREFIX = "whiteboard-refdock:v3";
+const LEGACY_STORAGE_PREFIXES = ["whiteboard-refdock:v2", "whiteboard-refdock:v1"];
 export const DEFAULT_DOCK_WIDTH = 420;
+
+type LegacyGraphState = Partial<{
+  snapshotsByWhiteboard: Record<string, Snapshot>;
+  scrollByWhiteboard: Record<string, number>;
+  reviewStateByReviewKey: Record<string, ReviewStateRecord>;
+}>;
 
 function normalizeWidth(value: unknown, fallback = DEFAULT_DOCK_WIDTH): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -21,6 +37,14 @@ function normalizeReferenceState(value: unknown): ReferenceState {
 
 function normalizeSourceType(value: unknown): SnapshotSourceType {
   return value === "page" || value === "keyword" ? value : "keyword";
+}
+
+export function normalizeSourceValue(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+export function buildReviewKey(whiteboardId: string, sourceType: SnapshotSourceType, sourceValue: string): string {
+  return `${whiteboardId}::${sourceType}::${normalizeSourceValue(sourceValue)}`;
 }
 
 function normalizeSnapshotItem(item: unknown, index: number): SnapshotItem | null {
@@ -84,29 +108,315 @@ function normalizeSnapshot(snapshot: unknown): Snapshot | null {
   };
 }
 
+function normalizeReviewStateItem(itemId: string, value: unknown): ReviewStateItem | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const status = normalizeStatus(record.status);
+  if (status === "unseen") {
+    return null;
+  }
+
+  return {
+    itemId,
+    status,
+    updatedAt: typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : Date.now(),
+  };
+}
+
+function normalizeReviewStateRecord(record: unknown): ReviewStateRecord | null {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const raw = record as Record<string, unknown>;
+  const whiteboardId = typeof raw.whiteboardId === "string" ? raw.whiteboardId : "";
+  const sourceType = normalizeSourceType(raw.sourceType);
+  const sourceValue = typeof raw.sourceValue === "string" ? raw.sourceValue : "";
+  const normalizedSourceValue =
+    typeof raw.normalizedSourceValue === "string" && raw.normalizedSourceValue.trim()
+      ? raw.normalizedSourceValue
+      : normalizeSourceValue(sourceValue);
+  const reviewKey =
+    typeof raw.reviewKey === "string" && raw.reviewKey.trim()
+      ? raw.reviewKey
+      : buildReviewKey(whiteboardId, sourceType, sourceValue);
+
+  const items =
+    !raw.items || typeof raw.items !== "object"
+      ? {}
+      : Object.fromEntries(
+          Object.entries(raw.items as Record<string, unknown>)
+            .map(([itemId, value]) => {
+              const normalized = normalizeReviewStateItem(itemId, value);
+              return normalized ? ([itemId, normalized] as const) : null;
+            })
+            .filter((entry): entry is readonly [string, ReviewStateItem] => entry !== null),
+        );
+
+  return {
+    reviewKey,
+    whiteboardId,
+    sourceType,
+    sourceValue,
+    normalizedSourceValue,
+    updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
+    items,
+  };
+}
+
+function normalizeReviewStateByReviewKey(value: unknown): Record<string, ReviewStateRecord> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([reviewKey, record]) => {
+        const normalized = normalizeReviewStateRecord(record);
+        if (!normalized) {
+          return null;
+        }
+
+        return [
+          reviewKey,
+          {
+            ...normalized,
+            reviewKey,
+          },
+        ] as const;
+      })
+      .filter((entry): entry is readonly [string, ReviewStateRecord] => entry !== null),
+  );
+}
+
+function normalizeSnapshotsByReviewKey(value: unknown): Record<string, Snapshot> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([reviewKey, snapshot]) => {
+        const normalized = normalizeSnapshot(snapshot);
+        return normalized ? ([reviewKey, normalized] as const) : null;
+      })
+      .filter((entry): entry is readonly [string, Snapshot] => entry !== null),
+  );
+}
+
 function normalizeSnapshotsByWhiteboard(value: unknown): Record<string, Snapshot> {
   if (!value || typeof value !== "object") {
     return {};
   }
 
-  const entries = Object.entries(value as Record<string, unknown>)
-    .map(([whiteboardId, snapshot]) => {
-      const normalized = normalizeSnapshot(snapshot);
-      if (!normalized) {
-        return null;
-      }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([whiteboardId, snapshot]) => {
+        const normalized = normalizeSnapshot(snapshot);
+        if (!normalized) {
+          return null;
+        }
 
-      return [
+        return [
+          whiteboardId,
+          {
+            ...normalized,
+            whiteboardId: normalized.whiteboardId || whiteboardId,
+          },
+        ] as const;
+      })
+      .filter((entry): entry is readonly [string, Snapshot] => entry !== null),
+  );
+}
+
+function normalizeStringListMap(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, rawList]) => [
+      key,
+      Array.isArray(rawList)
+        ? Array.from(
+            new Set(
+              rawList.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim()),
+            ),
+          )
+        : [],
+    ]),
+  );
+}
+
+function normalizeStringMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, rawValue]) => (typeof rawValue === "string" && rawValue.trim() ? ([key, rawValue] as const) : null))
+      .filter((entry): entry is readonly [string, string] => entry !== null),
+  );
+}
+
+function normalizeNumberMap(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, rawValue]) =>
+        typeof rawValue === "number" && Number.isFinite(rawValue) ? ([key, Math.max(0, Math.round(rawValue))] as const) : null,
+      )
+      .filter((entry): entry is readonly [string, number] => entry !== null),
+  );
+}
+
+function migrateReviewStateFromSnapshots(
+  reviewStateByReviewKey: Record<string, ReviewStateRecord>,
+  snapshots: Snapshot[],
+): Record<string, ReviewStateRecord> {
+  const nextReviewStateByReviewKey = { ...reviewStateByReviewKey };
+
+  for (const snapshot of snapshots) {
+    const reviewKey = buildReviewKey(snapshot.whiteboardId, snapshot.sourceType, snapshot.sourceValue);
+    if (nextReviewStateByReviewKey[reviewKey]) {
+      continue;
+    }
+
+    const items = Object.fromEntries(
+      snapshot.items
+        .filter((item) => item.status !== "unseen")
+        .map((item) => [
+          item.id,
+          {
+            itemId: item.id,
+            status: item.status,
+            updatedAt: snapshot.createdAt,
+          } satisfies ReviewStateItem,
+        ]),
+    );
+
+    if (Object.keys(items).length === 0) {
+      continue;
+    }
+
+    nextReviewStateByReviewKey[reviewKey] = {
+      reviewKey,
+      whiteboardId: snapshot.whiteboardId,
+      sourceType: snapshot.sourceType,
+      sourceValue: snapshot.sourceValue,
+      normalizedSourceValue: normalizeSourceValue(snapshot.sourceValue),
+      updatedAt: snapshot.createdAt,
+      items,
+    };
+  }
+
+  return nextReviewStateByReviewKey;
+}
+
+function applyReviewStateToSnapshot(
+  snapshot: Snapshot,
+  reviewStateByReviewKey: Record<string, ReviewStateRecord>,
+): Snapshot {
+  const reviewKey = buildReviewKey(snapshot.whiteboardId, snapshot.sourceType, snapshot.sourceValue);
+  const reviewState = reviewStateByReviewKey[reviewKey];
+  if (!reviewState) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    items: snapshot.items.map((item) => ({
+      ...item,
+      status: reviewState.items[item.id]?.status ?? "unseen",
+    })),
+  };
+}
+
+function deriveSavedSourcesFromSnapshots(snapshotsByReviewKey: Record<string, Snapshot>): Record<string, string[]> {
+  const grouped = new Map<string, Array<{ reviewKey: string; createdAt: number }>>();
+
+  for (const [reviewKey, snapshot] of Object.entries(snapshotsByReviewKey)) {
+    const current = grouped.get(snapshot.whiteboardId) ?? [];
+    current.push({ reviewKey, createdAt: snapshot.createdAt });
+    grouped.set(snapshot.whiteboardId, current);
+  }
+
+  return Object.fromEntries(
+    Array.from(grouped.entries()).map(([whiteboardId, entries]) => [
+      whiteboardId,
+      entries.sort((left, right) => right.createdAt - left.createdAt).map((entry) => entry.reviewKey),
+    ]),
+  );
+}
+
+function sanitizeSavedSources(
+  savedSourcesByWhiteboard: Record<string, string[]>,
+  snapshotsByReviewKey: Record<string, Snapshot>,
+): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(savedSourcesByWhiteboard)
+      .map(([whiteboardId, reviewKeys]) => [
         whiteboardId,
-        {
-          ...normalized,
-          whiteboardId: normalized.whiteboardId || whiteboardId,
-        },
-      ] as const;
-    })
-    .filter((entry): entry is readonly [string, Snapshot] => entry !== null);
+        reviewKeys.filter((reviewKey) => Boolean(snapshotsByReviewKey[reviewKey])),
+      ])
+      .filter(([, reviewKeys]) => reviewKeys.length > 0),
+  );
+}
 
-  return Object.fromEntries(entries);
+function sanitizeActiveReviewKeys(
+  activeReviewKeyByWhiteboard: Record<string, string>,
+  savedSourcesByWhiteboard: Record<string, string[]>,
+): Record<string, string> {
+  const nextActiveReviewKeyByWhiteboard: Record<string, string> = {};
+
+  for (const [whiteboardId, reviewKeys] of Object.entries(savedSourcesByWhiteboard)) {
+    const activeReviewKey = activeReviewKeyByWhiteboard[whiteboardId];
+    nextActiveReviewKeyByWhiteboard[whiteboardId] = activeReviewKey && reviewKeys.includes(activeReviewKey) ? activeReviewKey : reviewKeys[0];
+  }
+
+  return nextActiveReviewKeyByWhiteboard;
+}
+
+function buildStateFromLegacySnapshots(
+  parsed: LegacyGraphState,
+  normalizedReviewStateByReviewKey: Record<string, ReviewStateRecord>,
+): Pick<GraphState, "savedSourcesByWhiteboard" | "activeReviewKeyByWhiteboard" | "snapshotsByReviewKey" | "reviewStateByReviewKey" | "scrollByReviewKey"> {
+  const snapshotsByWhiteboard = normalizeSnapshotsByWhiteboard(parsed.snapshotsByWhiteboard);
+  const migratedReviewStateByReviewKey = migrateReviewStateFromSnapshots(normalizedReviewStateByReviewKey, Object.values(snapshotsByWhiteboard));
+  const scrollByWhiteboard = normalizeNumberMap(parsed.scrollByWhiteboard);
+
+  const snapshotsByReviewKey: Record<string, Snapshot> = {};
+  const savedSourcesByWhiteboard: Record<string, string[]> = {};
+  const activeReviewKeyByWhiteboard: Record<string, string> = {};
+  const scrollByReviewKey: Record<string, number> = {};
+
+  for (const [whiteboardId, snapshot] of Object.entries(snapshotsByWhiteboard)) {
+    const reviewKey = buildReviewKey(snapshot.whiteboardId, snapshot.sourceType, snapshot.sourceValue);
+    const hydratedSnapshot = applyReviewStateToSnapshot(snapshot, migratedReviewStateByReviewKey);
+
+    snapshotsByReviewKey[reviewKey] = hydratedSnapshot;
+    savedSourcesByWhiteboard[whiteboardId] = [reviewKey];
+    activeReviewKeyByWhiteboard[whiteboardId] = reviewKey;
+
+    if (typeof scrollByWhiteboard[whiteboardId] === "number") {
+      scrollByReviewKey[reviewKey] = scrollByWhiteboard[whiteboardId];
+    }
+  }
+
+  return {
+    savedSourcesByWhiteboard,
+    activeReviewKeyByWhiteboard,
+    snapshotsByReviewKey,
+    reviewStateByReviewKey: migratedReviewStateByReviewKey,
+    scrollByReviewKey,
+  };
 }
 
 export function getDefaultGraphState(): GraphState {
@@ -114,8 +424,11 @@ export function getDefaultGraphState(): GraphState {
     dockVisible: true,
     dockWidth: DEFAULT_DOCK_WIDTH,
     dockWidthsByWhiteboard: {},
-    snapshotsByWhiteboard: {},
-    scrollByWhiteboard: {},
+    savedSourcesByWhiteboard: {},
+    activeReviewKeyByWhiteboard: {},
+    snapshotsByReviewKey: {},
+    reviewStateByReviewKey: {},
+    scrollByReviewKey: {},
   };
 }
 
@@ -125,24 +438,32 @@ export function getGraphStorageKey(graph: unknown): string {
   }
 
   const graphRecord = graph as Record<string, unknown>;
-  const identifier =
-    graphRecord.path ??
-    graphRecord.url ??
-    graphRecord.name ??
-    graphRecord.id ??
-    "default";
+  const identifier = graphRecord.path ?? graphRecord.url ?? graphRecord.name ?? graphRecord.id ?? "default";
 
   return `${STORAGE_PREFIX}:${String(identifier)}`;
 }
 
+function getLegacyGraphStorageKeys(storageKey: string): string[] {
+  const currentPrefix = `${STORAGE_PREFIX}:`;
+  if (!storageKey.startsWith(currentPrefix)) {
+    return [];
+  }
+
+  const suffix = storageKey.slice(currentPrefix.length);
+  return LEGACY_STORAGE_PREFIXES.map((prefix) => `${prefix}:${suffix}`);
+}
+
 export function loadGraphState(storageKey: string): GraphState {
-  const raw = localStorage.getItem(storageKey);
+  const raw = [storageKey, ...getLegacyGraphStorageKeys(storageKey)]
+    .map((key) => localStorage.getItem(key))
+    .find((value): value is string => Boolean(value));
+
   if (!raw) {
     return getDefaultGraphState();
   }
 
   try {
-    const parsed = JSON.parse(raw) as Partial<GraphState>;
+    const parsed = JSON.parse(raw) as Partial<GraphState> & LegacyGraphState;
     const defaultState = getDefaultGraphState();
     const normalizedDockWidth = normalizeWidth(parsed.dockWidth, defaultState.dockWidth);
     const normalizedWidths = Object.fromEntries(
@@ -152,13 +473,59 @@ export function loadGraphState(storageKey: string): GraphState {
       ]),
     );
 
+    const hasV3Shape =
+      Boolean(parsed.snapshotsByReviewKey) ||
+      Boolean(parsed.savedSourcesByWhiteboard) ||
+      Boolean(parsed.activeReviewKeyByWhiteboard) ||
+      Boolean(parsed.scrollByReviewKey);
+
+    if (!hasV3Shape) {
+      const legacyState = buildStateFromLegacySnapshots(parsed, normalizeReviewStateByReviewKey(parsed.reviewStateByReviewKey));
+
+      return {
+        ...defaultState,
+        ...parsed,
+        dockWidth: normalizedDockWidth,
+        dockWidthsByWhiteboard: normalizedWidths,
+        ...legacyState,
+      };
+    }
+
+    let reviewStateByReviewKey = normalizeReviewStateByReviewKey(parsed.reviewStateByReviewKey);
+    reviewStateByReviewKey = migrateReviewStateFromSnapshots(
+      reviewStateByReviewKey,
+      Object.values(normalizeSnapshotsByReviewKey(parsed.snapshotsByReviewKey)),
+    );
+
+    const snapshotsByReviewKey = Object.fromEntries(
+      Object.entries(normalizeSnapshotsByReviewKey(parsed.snapshotsByReviewKey)).map(([reviewKey, snapshot]) => [
+        reviewKey,
+        applyReviewStateToSnapshot(snapshot, reviewStateByReviewKey),
+      ]),
+    );
+
+    const savedSourcesByWhiteboard = sanitizeSavedSources(
+      Object.keys(normalizeStringListMap(parsed.savedSourcesByWhiteboard)).length > 0
+        ? normalizeStringListMap(parsed.savedSourcesByWhiteboard)
+        : deriveSavedSourcesFromSnapshots(snapshotsByReviewKey),
+      snapshotsByReviewKey,
+    );
+
+    const activeReviewKeyByWhiteboard = sanitizeActiveReviewKeys(
+      normalizeStringMap(parsed.activeReviewKeyByWhiteboard),
+      savedSourcesByWhiteboard,
+    );
+
     return {
       ...defaultState,
       ...parsed,
       dockWidth: normalizedDockWidth,
       dockWidthsByWhiteboard: normalizedWidths,
-      snapshotsByWhiteboard: normalizeSnapshotsByWhiteboard(parsed.snapshotsByWhiteboard),
-      scrollByWhiteboard: parsed.scrollByWhiteboard ?? {},
+      savedSourcesByWhiteboard,
+      activeReviewKeyByWhiteboard,
+      snapshotsByReviewKey,
+      reviewStateByReviewKey,
+      scrollByReviewKey: normalizeNumberMap(parsed.scrollByReviewKey),
     };
   } catch (_error) {
     return getDefaultGraphState();
