@@ -22,6 +22,7 @@ Instead of relying on Logseq's live references view, it creates saved sources fo
 - Open the current sync file or the graph-wide sync index from the dock.
 - Toggle the dock from the Logseq toolbar.
 - Toggle the dock with a keyboard shortcut.
+- Use `Shift+Click` on `Locate` to open the target in Logseq's right sidebar.
 
 ## Best For
 
@@ -40,6 +41,7 @@ Instead of relying on Logseq's live references view, it creates saved sources fo
 6. Review items in the `Linked` and `Unlinked` tabs.
 7. Drag useful items into the whiteboard.
 8. Mark items as `seen`, `unseen`, or `skipped`.
+9. Use `Shift+Click` on `Locate` when you want to open the target in the right sidebar instead of the main content area.
 
 Default shortcut:
 
@@ -66,8 +68,7 @@ Graph-backed sync does not turn the plugin into a remote service. It only persis
 
 ## Platform Support
 
-- Desktop Logseq on macOS: supported
-- Desktop Logseq on Windows/Linux: expected to work, but should still be validated in a real desktop runtime
+- Desktop Logseq: macOS supported; Windows/Linux not yet fully validated
 - Web Logseq: not supported
 - Database graph: not declared as supported
 
