@@ -35,7 +35,10 @@ const HOST_CONTAINER_ID = "whiteboard-refdock-host";
 const TOOLBAR_KEY = "whiteboard-refdock-toolbar";
 const MIN_WIDTH = 320;
 const DEFAULT_MAX_WIDTH = 560;
-const DEFAULT_TOGGLE_SHORTCUT = "mod+alt+r";
+const IS_MAC_PLATFORM =
+  typeof navigator !== "undefined" && /(Mac|iPhone|iPad|iPod)/i.test(navigator.platform || navigator.userAgent);
+const DEFAULT_TOGGLE_SHORTCUT_BINDING = "mod+alt+r";
+const DEFAULT_TOGGLE_SHORTCUT_LABEL = IS_MAC_PLATFORM ? "Cmd+Option+R" : "Ctrl+Alt+R";
 type SurfaceMode = "iframe" | "host";
 type ReferenceFilter = ReferenceState;
 type GraphSyncStatus = "local-only" | "pending" | "syncing" | "synced" | "error";
@@ -57,9 +60,9 @@ const SETTINGS_SCHEMA = [
   {
     key: "toggleDockShortcut",
     type: "string",
-    default: DEFAULT_TOGGLE_SHORTCUT,
+    default: DEFAULT_TOGGLE_SHORTCUT_LABEL,
     title: "Toggle RefDock shortcut",
-    description: "Default: mod+Option+R. Reload the plugin after changing this shortcut.",
+    description: `Default: ${DEFAULT_TOGGLE_SHORTCUT_LABEL}. Reload the plugin after changing this shortcut.`,
   },
 ] as const;
 
@@ -112,14 +115,48 @@ function getEntityId(entity: unknown): number | null {
   return null;
 }
 
+function normalizeShortcutForLogseq(value: string): string {
+  const parts = value
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return DEFAULT_TOGGLE_SHORTCUT_BINDING;
+  }
+
+  const normalized = parts.map((part) => {
+    const token = part.toLocaleLowerCase();
+
+    switch (token) {
+      case "cmd":
+      case "command":
+      case "meta":
+      case "super":
+      case "⌘":
+        return "mod";
+      case "option":
+      case "opt":
+      case "⌥":
+        return "alt";
+      case "control":
+        return "ctrl";
+      default:
+        return token;
+    }
+  });
+
+  return normalized.join("+");
+}
+
 function getToggleDockShortcut(): string {
   const configured = logseq.settings?.toggleDockShortcut;
   if (typeof configured !== "string") {
-    return DEFAULT_TOGGLE_SHORTCUT;
+    return DEFAULT_TOGGLE_SHORTCUT_BINDING;
   }
 
   const normalized = configured.trim();
-  return normalized || DEFAULT_TOGGLE_SHORTCUT;
+  return normalized ? normalizeShortcutForLogseq(normalized) : DEFAULT_TOGGLE_SHORTCUT_BINDING;
 }
 
 class WhiteboardRefDockApp {

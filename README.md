@@ -21,6 +21,7 @@ Instead of relying on Logseq's live references view, it creates saved sources fo
 - Optionally enable graph-backed sync for saved sources and review state.
 - Open the current sync file or the graph-wide sync index from the dock.
 - Toggle the dock from the Logseq toolbar.
+- Toggle the dock with a keyboard shortcut.
 
 ## Best For
 
@@ -39,6 +40,11 @@ Instead of relying on Logseq's live references view, it creates saved sources fo
 6. Review items in the `Linked` and `Unlinked` tabs.
 7. Drag useful items into the whiteboard.
 8. Mark items as `seen`, `unseen`, or `skipped`.
+
+Default shortcut:
+
+- macOS: `Cmd+Option+R`
+- Windows/Linux: `Ctrl+Alt+R`
 
 ## Storage and Sync
 
@@ -60,7 +66,8 @@ Graph-backed sync does not turn the plugin into a remote service. It only persis
 
 ## Platform Support
 
-- Desktop Logseq: supported
+- Desktop Logseq on macOS: supported
+- Desktop Logseq on Windows/Linux: expected to work, but should still be validated in a real desktop runtime
 - Web Logseq: not supported
 - Database graph: not declared as supported
 
