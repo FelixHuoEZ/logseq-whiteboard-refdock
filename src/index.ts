@@ -35,6 +35,7 @@ const HOST_CONTAINER_ID = "whiteboard-refdock-host";
 const TOOLBAR_KEY = "whiteboard-refdock-toolbar";
 const MIN_WIDTH = 320;
 const DEFAULT_MAX_WIDTH = 560;
+const DEFAULT_TOGGLE_SHORTCUT = "mod+alt+r";
 type SurfaceMode = "iframe" | "host";
 type ReferenceFilter = ReferenceState;
 type GraphSyncStatus = "local-only" | "pending" | "syncing" | "synced" | "error";
@@ -52,6 +53,13 @@ const SETTINGS_SCHEMA = [
     default: DEFAULT_MAX_WIDTH,
     title: "RefDock max width",
     description: "Maximum dock width in pixels.",
+  },
+  {
+    key: "toggleDockShortcut",
+    type: "string",
+    default: DEFAULT_TOGGLE_SHORTCUT,
+    title: "Toggle RefDock shortcut",
+    description: "Default: mod+Option+R. Reload the plugin after changing this shortcut.",
   },
 ] as const;
 
@@ -102,6 +110,16 @@ function getEntityId(entity: unknown): number | null {
   }
 
   return null;
+}
+
+function getToggleDockShortcut(): string {
+  const configured = logseq.settings?.toggleDockShortcut;
+  if (typeof configured !== "string") {
+    return DEFAULT_TOGGLE_SHORTCUT;
+  }
+
+  const normalized = configured.trim();
+  return normalized || DEFAULT_TOGGLE_SHORTCUT;
 }
 
 class WhiteboardRefDockApp {
@@ -2974,6 +2992,22 @@ async function main(): Promise<void> {
     },
     () => {
       void app.toggleDock();
+    },
+  );
+
+  logseq.App.registerCommandShortcut(
+    {
+      mode: "global",
+      binding: getToggleDockShortcut(),
+      mac: getToggleDockShortcut(),
+    },
+    () => {
+      void app.toggleDock();
+    },
+    {
+      key: "whiteboard-refdock-toggle-shortcut",
+      label: "Whiteboard RefDock: Toggle dock shortcut",
+      desc: "Toggle RefDock with the configured keyboard shortcut.",
     },
   );
 
