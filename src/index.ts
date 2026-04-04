@@ -2,7 +2,17 @@ import "@logseq/libs";
 
 import { createSnapshotFromKeyword, createSnapshotFromPage, getCurrentWhiteboard } from "./query";
 import { getSyncIndexPageName, getWhiteboardSyncPageName, readWhiteboardSyncState, writeWhiteboardSyncState } from "./sync";
-import { DEFAULT_DOCK_WIDTH, buildReviewKey, getGraphStorageKey, loadGraphState, normalizeSourceValue, saveGraphState } from "./storage";
+import {
+  DEFAULT_DOCK_WIDTH,
+  buildReviewKey,
+  getGraphStorageKey,
+  isSourceTombstoneEffective,
+  loadGraphState,
+  mergeReviewStateRecords,
+  normalizeSourceValue,
+  reconcileSourceTombstonesInGraphState,
+  saveGraphState,
+} from "./storage";
 import type {
   GraphState,
   ItemStatus,
@@ -13,6 +23,7 @@ import type {
   SnapshotItem,
   SnapshotSourceType,
   StatusFilter,
+  SourceTombstone,
   SyncMode,
   ThemeMode,
   WhiteboardInfo,
@@ -131,11 +142,16 @@ class WhiteboardRefDockApp {
         }
       }
 
+      for (const [reviewKey, tombstone] of Object.entries(syncedState.sourceTombstonesByReviewKey)) {
+        const localTombstone = this.graphState.sourceTombstonesByReviewKey[reviewKey];
+        if (!localTombstone || tombstone.deletedAt >= localTombstone.deletedAt) {
+          this.graphState.sourceTombstonesByReviewKey[reviewKey] = tombstone;
+        }
+      }
+
       for (const [reviewKey, syncedReviewState] of Object.entries(syncedState.reviewStateByReviewKey)) {
         const localReviewState = this.graphState.reviewStateByReviewKey[reviewKey];
-        if (!localReviewState || syncedReviewState.updatedAt >= localReviewState.updatedAt) {
-          this.graphState.reviewStateByReviewKey[reviewKey] = syncedReviewState;
-        }
+        this.graphState.reviewStateByReviewKey[reviewKey] = mergeReviewStateRecords(localReviewState, syncedReviewState);
       }
 
       const localReviewKeys = this.graphState.savedSourcesByWhiteboard[this.currentWhiteboard.id] ?? [];
@@ -147,6 +163,8 @@ class WhiteboardRefDockApp {
       if (mergedReviewKeys.length > 0) {
         this.graphState.savedSourcesByWhiteboard[this.currentWhiteboard.id] = mergedReviewKeys;
       }
+
+      this.reconcileSourceTombstones();
     } catch (error) {
       console.warn("whiteboard-refdock graph sync hydrate failed", error);
     }
@@ -257,6 +275,33 @@ class WhiteboardRefDockApp {
     if (this.storageKey) {
       saveGraphState(this.storageKey, this.graphState);
     }
+  }
+
+  private reconcileSourceTombstones(): void {
+    reconcileSourceTombstonesInGraphState(this.graphState);
+  }
+
+  private clearSourceTombstone(reviewKey: string): void {
+    delete this.graphState.sourceTombstonesByReviewKey[reviewKey];
+  }
+
+  private upsertSourceTombstone(
+    reviewKey: string,
+    source: Pick<SavedSourceMeta, "whiteboardId" | "sourceType" | "sourceValue" | "normalizedSourceValue">,
+    deletedAt: number,
+  ): SourceTombstone {
+    const existingTombstone = this.graphState.sourceTombstonesByReviewKey[reviewKey];
+    const nextTombstone: SourceTombstone = {
+      reviewKey,
+      whiteboardId: source.whiteboardId,
+      sourceType: source.sourceType,
+      sourceValue: source.sourceValue,
+      normalizedSourceValue: source.normalizedSourceValue,
+      deletedAt: existingTombstone ? Math.max(existingTombstone.deletedAt, deletedAt) : deletedAt,
+    };
+
+    this.graphState.sourceTombstonesByReviewKey[reviewKey] = nextTombstone;
+    return nextTombstone;
   }
 
   private getSyncMode(): SyncMode {
@@ -379,6 +424,32 @@ class WhiteboardRefDockApp {
     };
   }
 
+  private buildSourceDescriptor(
+    reviewKey: string,
+    snapshot: Snapshot | null | undefined,
+    sourceMeta: SavedSourceMeta | null | undefined,
+  ): Pick<SavedSourceMeta, "whiteboardId" | "sourceType" | "sourceValue" | "normalizedSourceValue"> | null {
+    if (sourceMeta) {
+      return {
+        whiteboardId: sourceMeta.whiteboardId,
+        sourceType: sourceMeta.sourceType,
+        sourceValue: sourceMeta.sourceValue,
+        normalizedSourceValue: sourceMeta.normalizedSourceValue,
+      };
+    }
+
+    if (!snapshot) {
+      return null;
+    }
+
+    return {
+      whiteboardId: snapshot.whiteboardId,
+      sourceType: snapshot.sourceType,
+      sourceValue: snapshot.sourceValue,
+      normalizedSourceValue: normalizeSourceValue(snapshot.sourceValue),
+    };
+  }
+
   private scheduleCurrentWhiteboardSync(): void {
     if (this.getSyncMode() !== "graph-backed" || !this.currentWhiteboard) {
       return;
@@ -435,8 +506,21 @@ class WhiteboardRefDockApp {
           ),
         ]),
       );
+      const sourceTombstonesByReviewKey = Object.fromEntries(
+        Object.entries(this.graphState.sourceTombstonesByReviewKey).filter(
+          ([reviewKey, tombstone]) =>
+            tombstone.whiteboardId === this.currentWhiteboard?.id &&
+            isSourceTombstoneEffective(tombstone, this.graphState.sourceMetaByReviewKey[reviewKey]),
+        ),
+      );
 
-      await writeWhiteboardSyncState(this.currentWhiteboard, sourceMetas, reviewStateByReviewKey, summariesByReviewKey);
+      await writeWhiteboardSyncState(
+        this.currentWhiteboard,
+        sourceMetas,
+        reviewStateByReviewKey,
+        summariesByReviewKey,
+        sourceTombstonesByReviewKey,
+      );
       this.graphSyncStatus = "synced";
       this.lastGraphSyncAt = Date.now();
       this.graphSyncError = "";
@@ -527,7 +611,10 @@ class WhiteboardRefDockApp {
 
   private getSavedReviewKeysForWhiteboard(whiteboardId: string): string[] {
     const keys = this.graphState.savedSourcesByWhiteboard[whiteboardId] ?? [];
-    return keys.filter((reviewKey) => Boolean(this.graphState.sourceMetaByReviewKey[reviewKey]));
+    return keys.filter((reviewKey) => {
+      const sourceMeta = this.graphState.sourceMetaByReviewKey[reviewKey];
+      return Boolean(sourceMeta) && !isSourceTombstoneEffective(this.graphState.sourceTombstonesByReviewKey[reviewKey], sourceMeta);
+    });
   }
 
   private syncActiveReviewKey(): void {
@@ -637,10 +724,12 @@ class WhiteboardRefDockApp {
 
   private upsertSavedSource(snapshot: Snapshot): string {
     const reviewKey = this.getReviewKey(snapshot);
+    this.clearSourceTombstone(reviewKey);
     this.upsertSourceMeta(this.buildSourceMetaFromSnapshot(snapshot));
     const reviewKeys = this.getSavedReviewKeysForWhiteboard(snapshot.whiteboardId).filter((entry) => entry !== reviewKey);
     this.graphState.savedSourcesByWhiteboard[snapshot.whiteboardId] = [reviewKey, ...reviewKeys];
     this.graphState.activeReviewKeyByWhiteboard[snapshot.whiteboardId] = reviewKey;
+    this.reconcileSourceTombstones();
     return reviewKey;
   }
 
@@ -700,25 +789,17 @@ class WhiteboardRefDockApp {
     const reviewState = this.getOrCreateReviewState(snapshot);
     const timestamp = Date.now();
 
-    if (status === "unseen") {
-      delete reviewState.items[itemId];
-    } else {
-      reviewState.items[itemId] = {
-        itemId,
-        status,
-        updatedAt: timestamp,
-      };
-    }
+    reviewState.items[itemId] = {
+      itemId,
+      status,
+      updatedAt: timestamp,
+    };
 
     reviewState.updatedAt = timestamp;
 
     const sourceMeta = this.graphState.sourceMetaByReviewKey[reviewState.reviewKey];
     if (sourceMeta) {
       sourceMeta.updatedAt = timestamp;
-    }
-
-    if (Object.keys(reviewState.items).length === 0) {
-      delete this.graphState.reviewStateByReviewKey[reviewState.reviewKey];
     }
 
     this.scheduleCurrentWhiteboardSync();
@@ -791,6 +872,7 @@ class WhiteboardRefDockApp {
     if (!snapshot) {
       const reviewItems = Object.values(reviewState?.items ?? {});
       return {
+        unseenCount: reviewItems.filter((item) => item.status === "unseen").length,
         seenCount: reviewItems.filter((item) => item.status === "seen").length,
         skippedCount: reviewItems.filter((item) => item.status === "skipped").length,
       };
@@ -1085,9 +1167,19 @@ class WhiteboardRefDockApp {
       return;
     }
 
+    const snapshot = this.graphState.snapshotsByReviewKey[activeReviewKey];
+    const sourceMeta = this.graphState.sourceMetaByReviewKey[activeReviewKey];
+    const sourceDescriptor = this.buildSourceDescriptor(activeReviewKey, snapshot, sourceMeta);
+    const deletedAt = Date.now();
+    if (sourceDescriptor) {
+      this.upsertSourceTombstone(activeReviewKey, sourceDescriptor, deletedAt);
+    }
+
     delete this.graphState.snapshotsByReviewKey[activeReviewKey];
     delete this.graphState.scrollByReviewKey[activeReviewKey];
+    delete this.graphState.reviewStateByReviewKey[activeReviewKey];
     this.removeSavedSource(this.currentWhiteboard.id, activeReviewKey);
+    this.reconcileSourceTombstones();
 
     this.syncSourceInputFromActiveSnapshot();
     this.selectDefaultReferenceFilter(this.getActiveSnapshot());
@@ -1145,10 +1237,17 @@ class WhiteboardRefDockApp {
       return;
     }
 
+    const sourceDescriptor = this.buildSourceDescriptor(reviewKey, snapshot, sourceMeta);
+    const deletedAt = Date.now();
+    if (sourceDescriptor) {
+      this.upsertSourceTombstone(reviewKey, sourceDescriptor, deletedAt);
+    }
+
     delete this.graphState.snapshotsByReviewKey[reviewKey];
     delete this.graphState.scrollByReviewKey[reviewKey];
     delete this.graphState.reviewStateByReviewKey[reviewKey];
     this.removeSavedSource(whiteboardId, reviewKey);
+    this.reconcileSourceTombstones();
 
     this.syncSourceInputFromActiveSnapshot();
     this.statusFilter = "all";

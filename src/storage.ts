@@ -8,6 +8,7 @@ import type {
   Snapshot,
   SnapshotItem,
   SnapshotSourceType,
+  SourceTombstone,
   SyncMode,
 } from "./types";
 
@@ -125,10 +126,6 @@ function normalizeReviewStateItem(itemId: string, value: unknown): ReviewStateIt
 
   const record = value as Record<string, unknown>;
   const status = normalizeStatus(record.status);
-  if (status === "unseen") {
-    return null;
-  }
-
   return {
     itemId,
     status,
@@ -249,6 +246,54 @@ function normalizeSourceMetaByReviewKey(value: unknown): Record<string, SavedSou
         return normalized ? ([reviewKey, { ...normalized, reviewKey }] as const) : null;
       })
       .filter((entry): entry is readonly [string, SavedSourceMeta] => entry !== null),
+  );
+}
+
+function normalizeSourceTombstone(record: unknown): SourceTombstone | null {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const raw = record as Record<string, unknown>;
+  const whiteboardId = typeof raw.whiteboardId === "string" ? raw.whiteboardId : "";
+  const sourceType = normalizeSourceType(raw.sourceType);
+  const sourceValue = typeof raw.sourceValue === "string" ? raw.sourceValue : "";
+  const normalizedSourceValue =
+    typeof raw.normalizedSourceValue === "string" && raw.normalizedSourceValue.trim()
+      ? raw.normalizedSourceValue
+      : normalizeSourceValue(sourceValue);
+  const reviewKey =
+    typeof raw.reviewKey === "string" && raw.reviewKey.trim()
+      ? raw.reviewKey
+      : buildReviewKey(whiteboardId, sourceType, sourceValue);
+  const deletedAt = typeof raw.deletedAt === "number" && Number.isFinite(raw.deletedAt) ? raw.deletedAt : null;
+
+  if (!whiteboardId || !sourceValue || !reviewKey || !deletedAt) {
+    return null;
+  }
+
+  return {
+    reviewKey,
+    whiteboardId,
+    sourceType,
+    sourceValue,
+    normalizedSourceValue,
+    deletedAt,
+  };
+}
+
+function normalizeSourceTombstonesByReviewKey(value: unknown): Record<string, SourceTombstone> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([reviewKey, record]) => {
+        const normalized = normalizeSourceTombstone(record);
+        return normalized ? ([reviewKey, { ...normalized, reviewKey }] as const) : null;
+      })
+      .filter((entry): entry is readonly [string, SourceTombstone] => entry !== null),
   );
 }
 
@@ -434,15 +479,61 @@ function deriveSourceMetaFromSnapshots(snapshotsByReviewKey: Record<string, Snap
   );
 }
 
+export function isSourceTombstoneEffective(
+  tombstone: SourceTombstone | null | undefined,
+  sourceMeta: SavedSourceMeta | null | undefined,
+): boolean {
+  if (!tombstone) {
+    return false;
+  }
+
+  return !sourceMeta || tombstone.deletedAt >= sourceMeta.updatedAt;
+}
+
+export function mergeReviewStateRecords(
+  localReviewState: ReviewStateRecord | null | undefined,
+  syncedReviewState: ReviewStateRecord,
+): ReviewStateRecord {
+  if (!localReviewState) {
+    return syncedReviewState;
+  }
+
+  const preferredRecord =
+    syncedReviewState.updatedAt >= localReviewState.updatedAt ? syncedReviewState : localReviewState;
+  const mergedItems: Record<string, ReviewStateItem> = { ...localReviewState.items };
+
+  for (const [itemId, syncedItem] of Object.entries(syncedReviewState.items)) {
+    const localItem = mergedItems[itemId];
+    if (!localItem || syncedItem.updatedAt >= localItem.updatedAt) {
+      mergedItems[itemId] = syncedItem;
+    }
+  }
+
+  const newestItemTimestamp = Object.values(mergedItems).reduce(
+    (latest, item) => Math.max(latest, item.updatedAt),
+    0,
+  );
+
+  return {
+    ...preferredRecord,
+    updatedAt: Math.max(localReviewState.updatedAt, syncedReviewState.updatedAt, newestItemTimestamp),
+    items: mergedItems,
+  };
+}
+
 function sanitizeSavedSources(
   savedSourcesByWhiteboard: Record<string, string[]>,
   sourceMetaByReviewKey: Record<string, SavedSourceMeta>,
+  sourceTombstonesByReviewKey: Record<string, SourceTombstone>,
 ): Record<string, string[]> {
   return Object.fromEntries(
     Object.entries(savedSourcesByWhiteboard)
       .map(([whiteboardId, reviewKeys]) => [
         whiteboardId,
-        reviewKeys.filter((reviewKey) => Boolean(sourceMetaByReviewKey[reviewKey])),
+        reviewKeys.filter((reviewKey) => {
+          const sourceMeta = sourceMetaByReviewKey[reviewKey];
+          return Boolean(sourceMeta) && !isSourceTombstoneEffective(sourceTombstonesByReviewKey[reviewKey], sourceMeta);
+        }),
       ])
       .filter(([, reviewKeys]) => reviewKeys.length > 0),
   );
@@ -462,12 +553,43 @@ function sanitizeActiveReviewKeys(
   return nextActiveReviewKeyByWhiteboard;
 }
 
+export function reconcileSourceTombstonesInGraphState(state: GraphState): void {
+  for (const [reviewKey, tombstone] of Object.entries(state.sourceTombstonesByReviewKey)) {
+    const sourceMeta = state.sourceMetaByReviewKey[reviewKey];
+    if (!isSourceTombstoneEffective(tombstone, sourceMeta)) {
+      delete state.sourceTombstonesByReviewKey[reviewKey];
+      continue;
+    }
+
+    delete state.sourceMetaByReviewKey[reviewKey];
+    delete state.snapshotsByReviewKey[reviewKey];
+    delete state.reviewStateByReviewKey[reviewKey];
+    delete state.scrollByReviewKey[reviewKey];
+  }
+
+  state.savedSourcesByWhiteboard = sanitizeSavedSources(
+    state.savedSourcesByWhiteboard,
+    state.sourceMetaByReviewKey,
+    state.sourceTombstonesByReviewKey,
+  );
+  state.activeReviewKeyByWhiteboard = sanitizeActiveReviewKeys(
+    state.activeReviewKeyByWhiteboard,
+    state.savedSourcesByWhiteboard,
+  );
+}
+
 function buildStateFromLegacySnapshots(
   parsed: LegacyGraphState,
   normalizedReviewStateByReviewKey: Record<string, ReviewStateRecord>,
 ): Pick<
   GraphState,
-  "savedSourcesByWhiteboard" | "activeReviewKeyByWhiteboard" | "sourceMetaByReviewKey" | "snapshotsByReviewKey" | "reviewStateByReviewKey" | "scrollByReviewKey"
+  | "savedSourcesByWhiteboard"
+  | "activeReviewKeyByWhiteboard"
+  | "sourceMetaByReviewKey"
+  | "sourceTombstonesByReviewKey"
+  | "snapshotsByReviewKey"
+  | "reviewStateByReviewKey"
+  | "scrollByReviewKey"
 > {
   const snapshotsByWhiteboard = normalizeSnapshotsByWhiteboard(parsed.snapshotsByWhiteboard);
   const migratedReviewStateByReviewKey = migrateReviewStateFromSnapshots(normalizedReviewStateByReviewKey, Object.values(snapshotsByWhiteboard));
@@ -506,6 +628,7 @@ function buildStateFromLegacySnapshots(
     savedSourcesByWhiteboard,
     activeReviewKeyByWhiteboard,
     sourceMetaByReviewKey,
+    sourceTombstonesByReviewKey: {},
     snapshotsByReviewKey,
     reviewStateByReviewKey: migratedReviewStateByReviewKey,
     scrollByReviewKey,
@@ -522,6 +645,7 @@ export function getDefaultGraphState(): GraphState {
     savedSourcesByWhiteboard: {},
     activeReviewKeyByWhiteboard: {},
     sourceMetaByReviewKey: {},
+    sourceTombstonesByReviewKey: {},
     snapshotsByReviewKey: {},
     reviewStateByReviewKey: {},
     scrollByReviewKey: {},
@@ -606,12 +730,16 @@ export function loadGraphState(storageKey: string): GraphState {
       ...deriveSourceMetaFromSnapshots(snapshotsByReviewKey),
       ...normalizeSourceMetaByReviewKey((parsed as Record<string, unknown>).sourceMetaByReviewKey),
     };
+    const sourceTombstonesByReviewKey = normalizeSourceTombstonesByReviewKey(
+      (parsed as Record<string, unknown>).sourceTombstonesByReviewKey,
+    );
 
     const savedSourcesByWhiteboard = sanitizeSavedSources(
       Object.keys(normalizeStringListMap(parsed.savedSourcesByWhiteboard)).length > 0
         ? normalizeStringListMap(parsed.savedSourcesByWhiteboard)
         : deriveSavedSourcesFromSnapshots(snapshotsByReviewKey),
       sourceMetaByReviewKey,
+      sourceTombstonesByReviewKey,
     );
 
     const activeReviewKeyByWhiteboard = sanitizeActiveReviewKeys(
@@ -619,7 +747,7 @@ export function loadGraphState(storageKey: string): GraphState {
       savedSourcesByWhiteboard,
     );
 
-    return {
+    const nextState: GraphState = {
       ...defaultState,
       ...parsed,
       syncMode: normalizeSyncMode((parsed as Record<string, unknown>).syncMode),
@@ -629,10 +757,15 @@ export function loadGraphState(storageKey: string): GraphState {
       savedSourcesByWhiteboard,
       activeReviewKeyByWhiteboard,
       sourceMetaByReviewKey,
+      sourceTombstonesByReviewKey,
       snapshotsByReviewKey,
       reviewStateByReviewKey,
       scrollByReviewKey: normalizeNumberMap(parsed.scrollByReviewKey),
     };
+
+    reconcileSourceTombstonesInGraphState(nextState);
+
+    return nextState;
   } catch (_error) {
     return getDefaultGraphState();
   }

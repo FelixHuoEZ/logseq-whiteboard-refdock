@@ -55,6 +55,15 @@ export interface SavedSourceMeta {
   updatedAt: number;
 }
 
+export interface SourceTombstone {
+  reviewKey: string;
+  whiteboardId: string;
+  sourceType: SnapshotSourceType;
+  sourceValue: string;
+  normalizedSourceValue: string;
+  deletedAt: number;
+}
+
 export interface Snapshot {
   id: string;
   whiteboardId: string;
@@ -76,6 +85,7 @@ export interface GraphState {
   savedSourcesByWhiteboard: Record<string, string[]>;
   activeReviewKeyByWhiteboard: Record<string, string>;
   sourceMetaByReviewKey: Record<string, SavedSourceMeta>;
+  sourceTombstonesByReviewKey: Record<string, SourceTombstone>;
   snapshotsByReviewKey: Record<string, Snapshot>;
   reviewStateByReviewKey: Record<string, ReviewStateRecord>;
   scrollByReviewKey: Record<string, number>;

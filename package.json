@@ -1,6 +1,6 @@
 {
   "name": "logseq-whiteboard-refdock",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Review saved linked and unlinked reference snapshots in a dedicated dock while working on a Logseq whiteboard.",
   "author": "FelixHuoEZ",
   "contributors": [

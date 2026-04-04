@@ -1,10 +1,11 @@
-import type { ReviewStateItem, ReviewStateRecord, SavedSourceMeta, WhiteboardInfo } from "./types";
+import type { ReviewStateItem, ReviewStateRecord, SavedSourceMeta, SourceTombstone, WhiteboardInfo } from "./types";
 
 const SYNC_NAMESPACE = "whiteboard-refdock/state";
 const PAGE_KIND = "whiteboard-state";
 const INDEX_KIND = "sync-index";
 const SOURCE_MARKER = "refdock-source";
 const ITEM_MARKER = "refdock-item";
+const TOMBSTONE_MARKER = "refdock-source-tombstone";
 
 const PROP_KIND = "refdock-kind";
 const PROP_SCHEMA_VERSION = "refdock-schema-version";
@@ -24,6 +25,7 @@ const PROP_UNLINKED_COUNT = "refdock-unlinked-count";
 const PROP_UNSEEN_COUNT = "refdock-unseen-count";
 const PROP_SEEN_COUNT = "refdock-seen-count";
 const PROP_SKIPPED_COUNT = "refdock-skipped-count";
+const PROP_DELETED_AT = "refdock-deleted-at";
 const SCHEMA_VERSION = 1;
 
 type BlockLike = {
@@ -37,6 +39,7 @@ export interface WhiteboardSyncState {
   savedReviewKeys: string[];
   sourceMetaByReviewKey: Record<string, SavedSourceMeta>;
   reviewStateByReviewKey: Record<string, ReviewStateRecord>;
+  sourceTombstonesByReviewKey: Record<string, SourceTombstone>;
 }
 
 export interface SyncSourceSummary {
@@ -277,7 +280,7 @@ function normalizeReviewStateFromBlock(
     const itemId = getStringProperty(properties, PROP_ITEM_ID);
     const status = getStringProperty(properties, PROP_STATUS);
     const updatedAt = getNumberProperty(properties, PROP_UPDATED_AT);
-    if (!itemId || !updatedAt || (status !== "seen" && status !== "skipped")) {
+    if (!itemId || !updatedAt || (status !== "seen" && status !== "skipped" && status !== "unseen")) {
       continue;
     }
 
@@ -306,6 +309,35 @@ function normalizeReviewStateFromBlock(
   };
 }
 
+function normalizeSourceTombstoneFromBlock(
+  whiteboard: WhiteboardInfo,
+  block: BlockLike,
+): SourceTombstone | null {
+  const properties = getProperties(block);
+  const reviewKey = getStringProperty(properties, PROP_REVIEW_KEY);
+  const sourceType = getStringProperty(properties, PROP_SOURCE_TYPE);
+  const sourceValue = getStringProperty(properties, PROP_SOURCE_VALUE);
+  const normalizedSourceValue = getStringProperty(properties, PROP_NORMALIZED_SOURCE_VALUE);
+  const deletedAt = getNumberProperty(properties, PROP_DELETED_AT);
+
+  if (!reviewKey || !sourceType || !sourceValue || !normalizedSourceValue || !deletedAt) {
+    return null;
+  }
+
+  if (sourceType !== "page" && sourceType !== "keyword") {
+    return null;
+  }
+
+  return {
+    reviewKey,
+    whiteboardId: whiteboard.id,
+    sourceType,
+    sourceValue,
+    normalizedSourceValue,
+    deletedAt,
+  };
+}
+
 export async function readWhiteboardSyncState(whiteboard: WhiteboardInfo): Promise<WhiteboardSyncState> {
   const pageName = getWhiteboardSyncPageName(whiteboard.id);
   const page = await logseq.Editor.getPage(pageName);
@@ -314,12 +346,14 @@ export async function readWhiteboardSyncState(whiteboard: WhiteboardInfo): Promi
       savedReviewKeys: [],
       sourceMetaByReviewKey: {},
       reviewStateByReviewKey: {},
+      sourceTombstonesByReviewKey: {},
     };
   }
 
   const pageBlocks = await logseq.Editor.getPageBlocksTree(pageName);
   const sourceMetaByReviewKey: Record<string, SavedSourceMeta> = {};
   const reviewStateByReviewKey: Record<string, ReviewStateRecord> = {};
+  const sourceTombstonesByReviewKey: Record<string, SourceTombstone> = {};
   const savedReviewKeys: string[] = [];
 
   for (const block of pageBlocks) {
@@ -329,6 +363,14 @@ export async function readWhiteboardSyncState(whiteboard: WhiteboardInfo): Promi
 
     const properties = getProperties(block);
     const marker = getStringProperty(properties, PROP_KIND);
+    if (marker === TOMBSTONE_MARKER) {
+      const tombstone = normalizeSourceTombstoneFromBlock(whiteboard, block);
+      if (tombstone) {
+        sourceTombstonesByReviewKey[tombstone.reviewKey] = tombstone;
+      }
+      continue;
+    }
+
     if (marker !== SOURCE_MARKER) {
       continue;
     }
@@ -351,6 +393,7 @@ export async function readWhiteboardSyncState(whiteboard: WhiteboardInfo): Promi
     savedReviewKeys,
     sourceMetaByReviewKey,
     reviewStateByReviewKey,
+    sourceTombstonesByReviewKey,
   };
 }
 
@@ -503,6 +546,7 @@ export async function writeWhiteboardSyncState(
   sourceMetas: SavedSourceMeta[],
   reviewStateByReviewKey: Record<string, ReviewStateRecord>,
   summariesByReviewKey: Record<string, SyncSourceSummary>,
+  sourceTombstonesByReviewKey: Record<string, SourceTombstone>,
 ): Promise<void> {
   const pageName = await ensureWhiteboardSyncPage(whiteboard);
   const existingBlocks = await logseq.Editor.getPageBlocksTree(pageName);
@@ -568,6 +612,20 @@ export async function writeWhiteboardSyncState(
         },
       });
     }
+  }
+
+  const tombstones = Object.values(sourceTombstonesByReviewKey).sort((left, right) => left.deletedAt - right.deletedAt);
+  for (const tombstone of tombstones) {
+    await logseq.Editor.appendBlockInPage(pageName, TOMBSTONE_MARKER, {
+      properties: {
+        [PROP_KIND]: TOMBSTONE_MARKER,
+        [PROP_REVIEW_KEY]: tombstone.reviewKey,
+        [PROP_SOURCE_TYPE]: tombstone.sourceType,
+        [PROP_SOURCE_VALUE]: tombstone.sourceValue,
+        [PROP_NORMALIZED_SOURCE_VALUE]: tombstone.normalizedSourceValue,
+        [PROP_DELETED_AT]: tombstone.deletedAt,
+      },
+    });
   }
 
   await rebuildSyncIndexPage();
