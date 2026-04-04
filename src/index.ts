@@ -81,6 +81,29 @@ function getRenderableErrorMessage(error: unknown): string {
   return "Failed to create snapshot.";
 }
 
+function openInRightSidebar(id: string | number): void {
+  logseq.Editor.openInRightSidebar(id);
+}
+
+function getEntityId(entity: unknown): number | null {
+  if (!entity || typeof entity !== "object") {
+    return null;
+  }
+
+  const record = entity as Record<string, unknown>;
+  const directId = record.id;
+  if (typeof directId === "number" && Number.isFinite(directId)) {
+    return directId;
+  }
+
+  const dbId = record["db/id"];
+  if (typeof dbId === "number" && Number.isFinite(dbId)) {
+    return dbId;
+  }
+
+  return null;
+}
+
 class WhiteboardRefDockApp {
   private readonly iframeRoot: HTMLElement;
   private renderRoot: HTMLElement;
@@ -1356,7 +1379,7 @@ class WhiteboardRefDockApp {
     this.render();
   }
 
-  private async openItem(itemId: string): Promise<void> {
+  private async openItem(itemId: string, options?: { inSidebar?: boolean }): Promise<void> {
     const snapshot = this.getActiveSnapshot();
     if (!snapshot) {
       return;
@@ -1371,6 +1394,30 @@ class WhiteboardRefDockApp {
       item.status = "seen";
       this.recordItemStatus(snapshot, item.id, "seen");
       this.persist();
+    }
+
+    if (options?.inSidebar) {
+      if (this.graphState.dockVisible) {
+        this.graphState.dockVisible = false;
+        this.persist();
+        await this.syncDockSurface();
+      }
+
+      let sidebarTarget: string | number | null = null;
+      if (item.type === "block" && item.blockUuid) {
+        sidebarTarget = item.blockUuid;
+      } else if (item.pageName) {
+        const page = await logseq.Editor.getPage(item.pageName);
+        sidebarTarget = getEntityId(page);
+      }
+
+      if (!sidebarTarget) {
+        this.setError("Failed to open the item in the right sidebar.");
+        return;
+      }
+
+      openInRightSidebar(sidebarTarget);
+      return;
     }
 
     if (item.type === "block" && item.blockUuid) {
@@ -1609,10 +1656,11 @@ class WhiteboardRefDockApp {
     });
 
     root.querySelectorAll<HTMLElement>("[data-item-open]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", (event) => {
         const itemId = button.dataset.itemOpen;
         if (itemId) {
-          void this.openItem(itemId);
+          const mouseEvent = event as MouseEvent;
+          void this.openItem(itemId, { inSidebar: mouseEvent.shiftKey });
         }
       });
     });
