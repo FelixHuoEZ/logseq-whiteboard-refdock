@@ -4,13 +4,15 @@ import type {
   ReferenceState,
   ReviewStateItem,
   ReviewStateRecord,
+  SavedSourceMeta,
   Snapshot,
   SnapshotItem,
   SnapshotSourceType,
+  SyncMode,
 } from "./types";
 
-const STORAGE_PREFIX = "whiteboard-refdock:v3";
-const LEGACY_STORAGE_PREFIXES = ["whiteboard-refdock:v2", "whiteboard-refdock:v1"];
+const STORAGE_PREFIX = "whiteboard-refdock:v4";
+const LEGACY_STORAGE_PREFIXES = ["whiteboard-refdock:v3", "whiteboard-refdock:v2", "whiteboard-refdock:v1"];
 export const DEFAULT_DOCK_WIDTH = 420;
 
 type LegacyGraphState = Partial<{
@@ -37,6 +39,14 @@ function normalizeReferenceState(value: unknown): ReferenceState {
 
 function normalizeSourceType(value: unknown): SnapshotSourceType {
   return value === "page" || value === "keyword" ? value : "keyword";
+}
+
+function normalizeSyncMode(value: unknown): SyncMode {
+  return value === "graph-backed" || value === "local-only" ? value : "local-only";
+}
+
+function normalizeBoolean(value: unknown, fallback = false): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 export function normalizeSourceValue(value: string): string {
@@ -189,6 +199,56 @@ function normalizeReviewStateByReviewKey(value: unknown): Record<string, ReviewS
         ] as const;
       })
       .filter((entry): entry is readonly [string, ReviewStateRecord] => entry !== null),
+  );
+}
+
+function normalizeSavedSourceMeta(record: unknown): SavedSourceMeta | null {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const raw = record as Record<string, unknown>;
+  const whiteboardId = typeof raw.whiteboardId === "string" ? raw.whiteboardId : "";
+  const whiteboardName = typeof raw.whiteboardName === "string" && raw.whiteboardName.trim() ? raw.whiteboardName : "Whiteboard";
+  const sourceType = normalizeSourceType(raw.sourceType);
+  const sourceValue = typeof raw.sourceValue === "string" ? raw.sourceValue : "";
+  const normalizedSourceValue =
+    typeof raw.normalizedSourceValue === "string" && raw.normalizedSourceValue.trim()
+      ? raw.normalizedSourceValue
+      : normalizeSourceValue(sourceValue);
+  const reviewKey =
+    typeof raw.reviewKey === "string" && raw.reviewKey.trim()
+      ? raw.reviewKey
+      : buildReviewKey(whiteboardId, sourceType, sourceValue);
+
+  if (!whiteboardId || !sourceValue || !reviewKey) {
+    return null;
+  }
+
+  return {
+    reviewKey,
+    whiteboardId,
+    whiteboardName,
+    sourceType,
+    sourceValue,
+    normalizedSourceValue,
+    createdAt: typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now(),
+    updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : Date.now(),
+  };
+}
+
+function normalizeSourceMetaByReviewKey(value: unknown): Record<string, SavedSourceMeta> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([reviewKey, record]) => {
+        const normalized = normalizeSavedSourceMeta(record);
+        return normalized ? ([reviewKey, { ...normalized, reviewKey }] as const) : null;
+      })
+      .filter((entry): entry is readonly [string, SavedSourceMeta] => entry !== null),
   );
 }
 
@@ -356,15 +416,33 @@ function deriveSavedSourcesFromSnapshots(snapshotsByReviewKey: Record<string, Sn
   );
 }
 
+function deriveSourceMetaFromSnapshots(snapshotsByReviewKey: Record<string, Snapshot>): Record<string, SavedSourceMeta> {
+  return Object.fromEntries(
+    Object.entries(snapshotsByReviewKey).map(([reviewKey, snapshot]) => [
+      reviewKey,
+      {
+        reviewKey,
+        whiteboardId: snapshot.whiteboardId,
+        whiteboardName: snapshot.whiteboardName,
+        sourceType: snapshot.sourceType,
+        sourceValue: snapshot.sourceValue,
+        normalizedSourceValue: normalizeSourceValue(snapshot.sourceValue),
+        createdAt: snapshot.createdAt,
+        updatedAt: snapshot.createdAt,
+      } satisfies SavedSourceMeta,
+    ]),
+  );
+}
+
 function sanitizeSavedSources(
   savedSourcesByWhiteboard: Record<string, string[]>,
-  snapshotsByReviewKey: Record<string, Snapshot>,
+  sourceMetaByReviewKey: Record<string, SavedSourceMeta>,
 ): Record<string, string[]> {
   return Object.fromEntries(
     Object.entries(savedSourcesByWhiteboard)
       .map(([whiteboardId, reviewKeys]) => [
         whiteboardId,
-        reviewKeys.filter((reviewKey) => Boolean(snapshotsByReviewKey[reviewKey])),
+        reviewKeys.filter((reviewKey) => Boolean(sourceMetaByReviewKey[reviewKey])),
       ])
       .filter(([, reviewKeys]) => reviewKeys.length > 0),
   );
@@ -387,7 +465,10 @@ function sanitizeActiveReviewKeys(
 function buildStateFromLegacySnapshots(
   parsed: LegacyGraphState,
   normalizedReviewStateByReviewKey: Record<string, ReviewStateRecord>,
-): Pick<GraphState, "savedSourcesByWhiteboard" | "activeReviewKeyByWhiteboard" | "snapshotsByReviewKey" | "reviewStateByReviewKey" | "scrollByReviewKey"> {
+): Pick<
+  GraphState,
+  "savedSourcesByWhiteboard" | "activeReviewKeyByWhiteboard" | "sourceMetaByReviewKey" | "snapshotsByReviewKey" | "reviewStateByReviewKey" | "scrollByReviewKey"
+> {
   const snapshotsByWhiteboard = normalizeSnapshotsByWhiteboard(parsed.snapshotsByWhiteboard);
   const migratedReviewStateByReviewKey = migrateReviewStateFromSnapshots(normalizedReviewStateByReviewKey, Object.values(snapshotsByWhiteboard));
   const scrollByWhiteboard = normalizeNumberMap(parsed.scrollByWhiteboard);
@@ -395,6 +476,7 @@ function buildStateFromLegacySnapshots(
   const snapshotsByReviewKey: Record<string, Snapshot> = {};
   const savedSourcesByWhiteboard: Record<string, string[]> = {};
   const activeReviewKeyByWhiteboard: Record<string, string> = {};
+  const sourceMetaByReviewKey: Record<string, SavedSourceMeta> = {};
   const scrollByReviewKey: Record<string, number> = {};
 
   for (const [whiteboardId, snapshot] of Object.entries(snapshotsByWhiteboard)) {
@@ -402,6 +484,16 @@ function buildStateFromLegacySnapshots(
     const hydratedSnapshot = applyReviewStateToSnapshot(snapshot, migratedReviewStateByReviewKey);
 
     snapshotsByReviewKey[reviewKey] = hydratedSnapshot;
+    sourceMetaByReviewKey[reviewKey] = {
+      reviewKey,
+      whiteboardId: hydratedSnapshot.whiteboardId,
+      whiteboardName: hydratedSnapshot.whiteboardName,
+      sourceType: hydratedSnapshot.sourceType,
+      sourceValue: hydratedSnapshot.sourceValue,
+      normalizedSourceValue: normalizeSourceValue(hydratedSnapshot.sourceValue),
+      createdAt: hydratedSnapshot.createdAt,
+      updatedAt: hydratedSnapshot.createdAt,
+    };
     savedSourcesByWhiteboard[whiteboardId] = [reviewKey];
     activeReviewKeyByWhiteboard[whiteboardId] = reviewKey;
 
@@ -413,6 +505,7 @@ function buildStateFromLegacySnapshots(
   return {
     savedSourcesByWhiteboard,
     activeReviewKeyByWhiteboard,
+    sourceMetaByReviewKey,
     snapshotsByReviewKey,
     reviewStateByReviewKey: migratedReviewStateByReviewKey,
     scrollByReviewKey,
@@ -421,11 +514,14 @@ function buildStateFromLegacySnapshots(
 
 export function getDefaultGraphState(): GraphState {
   return {
+    syncMode: "local-only",
+    syncModeSettingInitialized: false,
     dockVisible: true,
     dockWidth: DEFAULT_DOCK_WIDTH,
     dockWidthsByWhiteboard: {},
     savedSourcesByWhiteboard: {},
     activeReviewKeyByWhiteboard: {},
+    sourceMetaByReviewKey: {},
     snapshotsByReviewKey: {},
     reviewStateByReviewKey: {},
     scrollByReviewKey: {},
@@ -485,6 +581,8 @@ export function loadGraphState(storageKey: string): GraphState {
       return {
         ...defaultState,
         ...parsed,
+        syncMode: normalizeSyncMode((parsed as Record<string, unknown>).syncMode),
+        syncModeSettingInitialized: normalizeBoolean((parsed as Record<string, unknown>).syncModeSettingInitialized),
         dockWidth: normalizedDockWidth,
         dockWidthsByWhiteboard: normalizedWidths,
         ...legacyState,
@@ -504,11 +602,16 @@ export function loadGraphState(storageKey: string): GraphState {
       ]),
     );
 
+    const sourceMetaByReviewKey = {
+      ...deriveSourceMetaFromSnapshots(snapshotsByReviewKey),
+      ...normalizeSourceMetaByReviewKey((parsed as Record<string, unknown>).sourceMetaByReviewKey),
+    };
+
     const savedSourcesByWhiteboard = sanitizeSavedSources(
       Object.keys(normalizeStringListMap(parsed.savedSourcesByWhiteboard)).length > 0
         ? normalizeStringListMap(parsed.savedSourcesByWhiteboard)
         : deriveSavedSourcesFromSnapshots(snapshotsByReviewKey),
-      snapshotsByReviewKey,
+      sourceMetaByReviewKey,
     );
 
     const activeReviewKeyByWhiteboard = sanitizeActiveReviewKeys(
@@ -519,10 +622,13 @@ export function loadGraphState(storageKey: string): GraphState {
     return {
       ...defaultState,
       ...parsed,
+      syncMode: normalizeSyncMode((parsed as Record<string, unknown>).syncMode),
+      syncModeSettingInitialized: normalizeBoolean((parsed as Record<string, unknown>).syncModeSettingInitialized),
       dockWidth: normalizedDockWidth,
       dockWidthsByWhiteboard: normalizedWidths,
       savedSourcesByWhiteboard,
       activeReviewKeyByWhiteboard,
+      sourceMetaByReviewKey,
       snapshotsByReviewKey,
       reviewStateByReviewKey,
       scrollByReviewKey: normalizeNumberMap(parsed.scrollByReviewKey),

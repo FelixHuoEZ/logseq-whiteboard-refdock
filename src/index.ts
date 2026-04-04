@@ -1,16 +1,19 @@
 import "@logseq/libs";
 
 import { createSnapshotFromKeyword, createSnapshotFromPage, getCurrentWhiteboard } from "./query";
+import { readWhiteboardSyncState, writeWhiteboardSyncState } from "./sync";
 import { DEFAULT_DOCK_WIDTH, buildReviewKey, getGraphStorageKey, loadGraphState, normalizeSourceValue, saveGraphState } from "./storage";
 import type {
   GraphState,
   ItemStatus,
   ReferenceState,
   ReviewStateRecord,
+  SavedSourceMeta,
   Snapshot,
   SnapshotItem,
   SnapshotSourceType,
   StatusFilter,
+  SyncMode,
   ThemeMode,
   WhiteboardInfo,
 } from "./types";
@@ -23,6 +26,13 @@ const DEFAULT_MAX_WIDTH = 560;
 type SurfaceMode = "iframe" | "host";
 type ReferenceFilter = ReferenceState;
 const SETTINGS_SCHEMA = [
+  {
+    key: "enableGraphSync",
+    type: "boolean",
+    default: false,
+    title: "Enable graph sync",
+    description: "Sync saved sources and review state through the graph. Snapshot cache and dock UI state stay local.",
+  },
   {
     key: "maxDockWidth",
     type: "number",
@@ -77,6 +87,8 @@ class WhiteboardRefDockApp {
   private themeMode: ThemeMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   private diagnosticsCollapsed = true;
   private resizeCleanup: (() => void) | null = null;
+  private syncWriteTimer: number | null = null;
+  private syncWriteInFlight = false;
 
   constructor(root: HTMLElement) {
     this.iframeRoot = root;
@@ -85,6 +97,8 @@ class WhiteboardRefDockApp {
 
   async init(): Promise<void> {
     await this.refreshGraphState();
+    this.ensureSyncModeSettingInitialized();
+    this.applySyncModeFromSettings();
     await this.refreshContext();
     this.render();
   }
@@ -95,8 +109,45 @@ class WhiteboardRefDockApp {
     this.graphState = loadGraphState(this.storageKey);
   }
 
+  private async hydrateCurrentWhiteboardFromGraphSync(): Promise<void> {
+    if (this.getSyncMode() !== "graph-backed" || !this.currentWhiteboard) {
+      return;
+    }
+
+    try {
+      const syncedState = await readWhiteboardSyncState(this.currentWhiteboard);
+
+      for (const [reviewKey, meta] of Object.entries(syncedState.sourceMetaByReviewKey)) {
+        const localMeta = this.graphState.sourceMetaByReviewKey[reviewKey];
+        if (!localMeta || meta.updatedAt >= localMeta.updatedAt) {
+          this.graphState.sourceMetaByReviewKey[reviewKey] = meta;
+        }
+      }
+
+      for (const [reviewKey, syncedReviewState] of Object.entries(syncedState.reviewStateByReviewKey)) {
+        const localReviewState = this.graphState.reviewStateByReviewKey[reviewKey];
+        if (!localReviewState || syncedReviewState.updatedAt >= localReviewState.updatedAt) {
+          this.graphState.reviewStateByReviewKey[reviewKey] = syncedReviewState;
+        }
+      }
+
+      const localReviewKeys = this.graphState.savedSourcesByWhiteboard[this.currentWhiteboard.id] ?? [];
+      const mergedReviewKeys = [
+        ...syncedState.savedReviewKeys,
+        ...localReviewKeys.filter((reviewKey) => !syncedState.savedReviewKeys.includes(reviewKey)),
+      ].filter((reviewKey) => Boolean(this.graphState.sourceMetaByReviewKey[reviewKey]));
+
+      if (mergedReviewKeys.length > 0) {
+        this.graphState.savedSourcesByWhiteboard[this.currentWhiteboard.id] = mergedReviewKeys;
+      }
+    } catch (error) {
+      console.warn("whiteboard-refdock graph sync hydrate failed", error);
+    }
+  }
+
   async refreshContext(): Promise<void> {
     this.currentWhiteboard = await getCurrentWhiteboard();
+    await this.hydrateCurrentWhiteboardFromGraphSync();
     this.syncActiveReviewKey();
     this.syncSourceInputFromActiveSnapshot();
     this.setCurrentDockWidth(this.getCurrentDockWidth());
@@ -104,6 +155,7 @@ class WhiteboardRefDockApp {
     this.persist();
     await this.syncDockSurface();
     this.render();
+    await this.ensureActiveSnapshotLoaded();
   }
 
   async toggleDock(): Promise<void> {
@@ -202,6 +254,128 @@ class WhiteboardRefDockApp {
     }
   }
 
+  private getSyncMode(): SyncMode {
+    return this.graphState.syncMode;
+  }
+
+  ensureSyncModeSettingInitialized(): void {
+    if (this.graphState.syncModeSettingInitialized) {
+      return;
+    }
+
+    try {
+      logseq.updateSettings({
+        enableGraphSync: this.graphState.syncMode === "graph-backed",
+      });
+    } catch (error) {
+      console.warn("whiteboard-refdock sync mode settings migration failed", error);
+    }
+
+    this.graphState.syncModeSettingInitialized = true;
+    this.persist();
+  }
+
+  private readSyncModeFromSettings(): SyncMode {
+    return logseq.settings?.enableGraphSync ? "graph-backed" : "local-only";
+  }
+
+  applySyncModeFromSettings(): boolean {
+    const nextMode = this.graphState.syncModeSettingInitialized ? this.readSyncModeFromSettings() : this.graphState.syncMode;
+    if (this.graphState.syncMode === nextMode) {
+      return false;
+    }
+
+    this.graphState.syncMode = nextMode;
+    this.persist();
+    return true;
+  }
+
+  async handleSettingsChanged(): Promise<void> {
+    const didChangeSyncMode = this.applySyncModeFromSettings();
+    if (didChangeSyncMode) {
+      const syncMode = this.getSyncMode();
+      this.message =
+        syncMode === "graph-backed"
+          ? "Graph sync enabled for this graph. Local cache remains active."
+          : "Local-only mode enabled. Existing graph-backed state was left intact.";
+      this.error = "";
+    }
+
+    await this.refreshContext();
+
+    if (didChangeSyncMode && this.getSyncMode() === "graph-backed") {
+      this.scheduleCurrentWhiteboardSync();
+    }
+  }
+
+  private upsertSourceMeta(meta: SavedSourceMeta): void {
+    this.graphState.sourceMetaByReviewKey[meta.reviewKey] = meta;
+  }
+
+  private getSavedSourceMeta(reviewKey: string): SavedSourceMeta | null {
+    return this.graphState.sourceMetaByReviewKey[reviewKey] ?? null;
+  }
+
+  private buildSourceMetaFromSnapshot(snapshot: Snapshot): SavedSourceMeta {
+    const reviewKey = this.getReviewKey(snapshot);
+    const existingMeta = this.graphState.sourceMetaByReviewKey[reviewKey];
+    return {
+      reviewKey,
+      whiteboardId: snapshot.whiteboardId,
+      whiteboardName: snapshot.whiteboardName,
+      sourceType: snapshot.sourceType,
+      sourceValue: snapshot.sourceValue,
+      normalizedSourceValue: normalizeSourceValue(snapshot.sourceValue),
+      createdAt: existingMeta?.createdAt ?? snapshot.createdAt,
+      updatedAt: Date.now(),
+    };
+  }
+
+  private scheduleCurrentWhiteboardSync(): void {
+    if (this.getSyncMode() !== "graph-backed" || !this.currentWhiteboard) {
+      return;
+    }
+
+    if (this.syncWriteTimer != null) {
+      window.clearTimeout(this.syncWriteTimer);
+    }
+
+    this.syncWriteTimer = window.setTimeout(() => {
+      void this.flushCurrentWhiteboardSync();
+    }, 300);
+  }
+
+  private async flushCurrentWhiteboardSync(): Promise<void> {
+    if (this.getSyncMode() !== "graph-backed" || !this.currentWhiteboard || this.syncWriteInFlight) {
+      return;
+    }
+
+    this.syncWriteInFlight = true;
+    this.syncWriteTimer = null;
+
+    try {
+      const reviewKeys = this.getSavedReviewKeysForWhiteboard(this.currentWhiteboard.id);
+      const sourceMetas = reviewKeys
+        .map((reviewKey) => this.graphState.sourceMetaByReviewKey[reviewKey])
+        .filter((meta): meta is SavedSourceMeta => Boolean(meta));
+
+      const reviewStateByReviewKey = Object.fromEntries(
+        reviewKeys
+          .map((reviewKey) => {
+            const reviewState = this.graphState.reviewStateByReviewKey[reviewKey];
+            return reviewState ? ([reviewKey, reviewState] as const) : null;
+          })
+          .filter((entry): entry is readonly [string, ReviewStateRecord] => entry !== null),
+      );
+
+      await writeWhiteboardSyncState(this.currentWhiteboard, sourceMetas, reviewStateByReviewKey);
+    } catch (error) {
+      console.warn("whiteboard-refdock graph sync write failed", error);
+    } finally {
+      this.syncWriteInFlight = false;
+    }
+  }
+
   private getConfiguredMaxWidth(): number {
     const configuredValue = Number(logseq.settings?.maxDockWidth);
     if (!Number.isFinite(configuredValue)) {
@@ -245,7 +419,7 @@ class WhiteboardRefDockApp {
 
   private getSavedReviewKeysForWhiteboard(whiteboardId: string): string[] {
     const keys = this.graphState.savedSourcesByWhiteboard[whiteboardId] ?? [];
-    return keys.filter((reviewKey) => Boolean(this.graphState.snapshotsByReviewKey[reviewKey]));
+    return keys.filter((reviewKey) => Boolean(this.graphState.sourceMetaByReviewKey[reviewKey]));
   }
 
   private syncActiveReviewKey(): void {
@@ -282,22 +456,50 @@ class WhiteboardRefDockApp {
     return this.graphState.snapshotsByReviewKey[activeReviewKey] ?? null;
   }
 
-  private getSavedSourceSnapshots(): Array<{ reviewKey: string; snapshot: Snapshot }> {
+  private getSavedSourceEntries(): Array<{ reviewKey: string; meta: SavedSourceMeta; snapshot: Snapshot | null }> {
     if (!this.currentWhiteboard) {
       return [];
     }
 
     return this.getSavedReviewKeysForWhiteboard(this.currentWhiteboard.id)
       .map((reviewKey) => {
+        const meta = this.graphState.sourceMetaByReviewKey[reviewKey];
         const snapshot = this.graphState.snapshotsByReviewKey[reviewKey];
-        return snapshot ? { reviewKey, snapshot } : null;
+        return meta
+          ? ({
+              reviewKey,
+              meta,
+              snapshot: snapshot ?? null,
+            } as { reviewKey: string; meta: SavedSourceMeta; snapshot: Snapshot | null })
+          : null;
       })
-      .filter((entry): entry is { reviewKey: string; snapshot: Snapshot } => entry !== null);
+      .filter((entry): entry is { reviewKey: string; meta: SavedSourceMeta; snapshot: Snapshot | null } => entry !== null);
+  }
+
+  private async ensureActiveSnapshotLoaded(): Promise<void> {
+    const activeReviewKey = this.getActiveReviewKey();
+    if (!activeReviewKey || this.graphState.snapshotsByReviewKey[activeReviewKey]) {
+      return;
+    }
+
+    await this.refreshSavedSource(activeReviewKey);
   }
 
   private syncSourceInputFromActiveSnapshot(): void {
     const snapshot = this.getActiveSnapshot();
     if (!snapshot) {
+      const activeReviewKey = this.getActiveReviewKey();
+      if (!activeReviewKey) {
+        return;
+      }
+
+      const meta = this.graphState.sourceMetaByReviewKey[activeReviewKey];
+      if (!meta) {
+        return;
+      }
+
+      this.sourceType = meta.sourceType;
+      this.sourceValue = meta.sourceValue;
       return;
     }
 
@@ -322,10 +524,12 @@ class WhiteboardRefDockApp {
     this.persist();
     this.render();
     this.restoreScrollPosition();
+    void this.ensureActiveSnapshotLoaded();
   }
 
   private upsertSavedSource(snapshot: Snapshot): string {
     const reviewKey = this.getReviewKey(snapshot);
+    this.upsertSourceMeta(this.buildSourceMetaFromSnapshot(snapshot));
     const reviewKeys = this.getSavedReviewKeysForWhiteboard(snapshot.whiteboardId).filter((entry) => entry !== reviewKey);
     this.graphState.savedSourcesByWhiteboard[snapshot.whiteboardId] = [reviewKey, ...reviewKeys];
     this.graphState.activeReviewKeyByWhiteboard[snapshot.whiteboardId] = reviewKey;
@@ -333,6 +537,7 @@ class WhiteboardRefDockApp {
   }
 
   private removeSavedSource(whiteboardId: string, reviewKey: string): void {
+    delete this.graphState.sourceMetaByReviewKey[reviewKey];
     const remainingReviewKeys = this.getSavedReviewKeysForWhiteboard(whiteboardId).filter((entry) => entry !== reviewKey);
     if (remainingReviewKeys.length > 0) {
       this.graphState.savedSourcesByWhiteboard[whiteboardId] = remainingReviewKeys;
@@ -399,9 +604,16 @@ class WhiteboardRefDockApp {
 
     reviewState.updatedAt = timestamp;
 
+    const sourceMeta = this.graphState.sourceMetaByReviewKey[reviewState.reviewKey];
+    if (sourceMeta) {
+      sourceMeta.updatedAt = timestamp;
+    }
+
     if (Object.keys(reviewState.items).length === 0) {
       delete this.graphState.reviewStateByReviewKey[reviewState.reviewKey];
     }
+
+    this.scheduleCurrentWhiteboardSync();
   }
 
   private getVisibleItems(): SnapshotItem[] {
@@ -725,6 +937,7 @@ class WhiteboardRefDockApp {
     this.statusFilter = "all";
     this.selectDefaultReferenceFilter(mergedSnapshot);
     this.persist();
+    this.scheduleCurrentWhiteboardSync();
 
     return mergedSnapshot;
   }
@@ -746,6 +959,7 @@ class WhiteboardRefDockApp {
     this.syncSourceInputFromActiveSnapshot();
     this.selectDefaultReferenceFilter(this.getActiveSnapshot());
     this.persist();
+    this.scheduleCurrentWhiteboardSync();
     this.message = "Active source removed.";
     this.error = "";
     this.render();
@@ -753,7 +967,12 @@ class WhiteboardRefDockApp {
 
   private async refreshSavedSource(reviewKey: string): Promise<void> {
     const snapshot = this.graphState.snapshotsByReviewKey[reviewKey];
-    if (!snapshot) {
+    const sourceMeta = this.graphState.sourceMetaByReviewKey[reviewKey];
+    const sourceType = snapshot?.sourceType ?? sourceMeta?.sourceType;
+    const sourceValue = snapshot?.sourceValue ?? sourceMeta?.sourceValue;
+    const whiteboardId = snapshot?.whiteboardId ?? sourceMeta?.whiteboardId;
+    const whiteboardName = snapshot?.whiteboardName ?? sourceMeta?.whiteboardName;
+    if (!sourceType || !sourceValue || !whiteboardId || !whiteboardName) {
       return;
     }
 
@@ -764,17 +983,17 @@ class WhiteboardRefDockApp {
 
     try {
       const whiteboard =
-        this.currentWhiteboard && this.currentWhiteboard.id === snapshot.whiteboardId
+        this.currentWhiteboard && this.currentWhiteboard.id === whiteboardId
           ? this.currentWhiteboard
-          : { id: snapshot.whiteboardId, name: snapshot.whiteboardName };
-      const refreshedSnapshot = await this.buildSnapshotForSource(whiteboard, snapshot.sourceType, snapshot.sourceValue);
+          : { id: whiteboardId, name: whiteboardName };
+      const refreshedSnapshot = await this.buildSnapshotForSource(whiteboard, sourceType, sourceValue);
       const mergedSnapshot = this.storeSnapshot(refreshedSnapshot, { resetScroll: false });
       this.message = `Refreshed ${mergedSnapshot.sourceValue}.`;
     } catch (error) {
       const message = getRenderableErrorMessage(error);
       this.setError(
         message.includes("[deferred timeout]")
-          ? `${snapshot.sourceType === "page" ? "Page" : "Keyword"} search timed out inside the Logseq runtime.`
+          ? `${sourceType === "page" ? "Page" : "Keyword"} search timed out inside the Logseq runtime.`
           : message,
       );
     } finally {
@@ -786,20 +1005,24 @@ class WhiteboardRefDockApp {
 
   private deleteSavedSource(reviewKey: string): void {
     const snapshot = this.graphState.snapshotsByReviewKey[reviewKey];
-    if (!snapshot) {
+    const sourceMeta = this.graphState.sourceMetaByReviewKey[reviewKey];
+    const whiteboardId = snapshot?.whiteboardId ?? sourceMeta?.whiteboardId;
+    const sourceValue = snapshot?.sourceValue ?? sourceMeta?.sourceValue;
+    if (!whiteboardId || !sourceValue) {
       return;
     }
 
     delete this.graphState.snapshotsByReviewKey[reviewKey];
     delete this.graphState.scrollByReviewKey[reviewKey];
     delete this.graphState.reviewStateByReviewKey[reviewKey];
-    this.removeSavedSource(snapshot.whiteboardId, reviewKey);
+    this.removeSavedSource(whiteboardId, reviewKey);
 
     this.syncSourceInputFromActiveSnapshot();
     this.statusFilter = "all";
     this.selectDefaultReferenceFilter(this.getActiveSnapshot());
     this.persist();
-    this.message = `Deleted source ${snapshot.sourceValue}.`;
+    this.scheduleCurrentWhiteboardSync();
+    this.message = `Deleted source ${sourceValue}.`;
     this.error = "";
     this.render();
   }
@@ -1172,10 +1395,11 @@ class WhiteboardRefDockApp {
   render(): void {
     const snapshot = this.getActiveSnapshot();
     const activeReviewKey = this.getActiveReviewKey();
-    const savedSourceEntries = this.getSavedSourceSnapshots();
+    const savedSourceEntries = this.getSavedSourceEntries();
     const visibleItems = this.getVisibleItems();
     const counts = this.getCounts(snapshot);
     const referenceCounts = this.getReferenceCounts(snapshot);
+    const syncMode = this.getSyncMode();
     const sourcePlaceholder = this.sourceType === "page" ? "Page name" : "Keyword";
     const trimmedSourceValue = this.sourceValue.trim();
     const draftReviewKey =
@@ -1183,7 +1407,7 @@ class WhiteboardRefDockApp {
         ? buildReviewKey(this.currentWhiteboard.id, this.sourceType, trimmedSourceValue)
         : null;
     const createSnapshotLabel =
-      this.busy ? "Saving..." : draftReviewKey && this.graphState.snapshotsByReviewKey[draftReviewKey] ? "Refresh Snapshot" : "Create Snapshot";
+      this.busy ? "Saving..." : draftReviewKey && this.graphState.sourceMetaByReviewKey[draftReviewKey] ? "Refresh Snapshot" : "Create Snapshot";
     const routeLabel = this.currentWhiteboard?.name ?? "No whiteboard";
     const isDockActive = Boolean(this.currentWhiteboard && this.graphState.dockVisible);
     const surfaceHint =
@@ -2058,22 +2282,26 @@ class WhiteboardRefDockApp {
               savedSourceEntries.length === 0
                 ? `<div class="source-empty">No saved sources on this whiteboard yet.</div>`
                 : savedSourceEntries
-                    .map(({ reviewKey, snapshot: sourceSnapshot }) => {
+                    .map(({ reviewKey, meta, snapshot: sourceSnapshot }) => {
                       const sourceReferenceCounts = this.getReferenceCounts(sourceSnapshot);
                       return `
                         <article class="source-row ${reviewKey === activeReviewKey ? "active" : ""}" data-review-key="${escapeAttribute(reviewKey)}" role="button" tabindex="0">
                           <div class="source-row-head">
-                            <span class="source-label">${escapeHtml(sourceSnapshot.sourceValue)}</span>
+                            <span class="source-label">${escapeHtml(meta.sourceValue)}</span>
                             <div class="source-actions">
-                              <span class="source-chip">${sourceSnapshot.items.length} items</span>
+                              <span class="source-chip">${sourceSnapshot ? `${sourceSnapshot.items.length} items` : "Needs refresh"}</span>
                               <button class="source-action" data-source-refresh="${escapeAttribute(reviewKey)}" ${this.busy ? "disabled" : ""}>Refresh</button>
                               <button class="source-action" data-source-delete="${escapeAttribute(reviewKey)}">Delete</button>
                             </div>
                           </div>
                           <div class="source-row-meta">
-                            <span class="source-chip type-${escapeAttribute(sourceSnapshot.sourceType)}">${escapeHtml(sourceSnapshot.sourceType)}</span>
-                            <span class="source-chip">${sourceReferenceCounts.linked} linked</span>
-                            <span class="source-chip">${sourceReferenceCounts.unlinked} unlinked</span>
+                            <span class="source-chip type-${escapeAttribute(meta.sourceType)}">${escapeHtml(meta.sourceType)}</span>
+                            ${
+                              sourceSnapshot
+                                ? `<span class="source-chip">${sourceReferenceCounts.linked} linked</span>
+                                   <span class="source-chip">${sourceReferenceCounts.unlinked} unlinked</span>`
+                                : `<span class="source-chip">local cache missing</span>`
+                            }
                           </div>
                         </article>
                       `;
@@ -2089,6 +2317,9 @@ class WhiteboardRefDockApp {
               <button class="chip-button ${this.sourceType === "page" ? "active" : ""}" data-source-type="page">Page</button>
               <button class="chip-button ${this.sourceType === "keyword" ? "active" : ""}" data-source-type="keyword">Keyword</button>
             </div>
+            <span class="source-chip">${escapeHtml(
+              syncMode === "graph-backed" ? "Graph sync enabled" : "Local only",
+            )}</span>
           </div>
           <div class="controls-grid">
             <input
@@ -2108,6 +2339,13 @@ class WhiteboardRefDockApp {
                   (this.sourceType === "page"
                     ? "Page mode saves or refreshes a page source on this whiteboard."
                     : "Keyword mode saves or refreshes a keyword source on this whiteboard."),
+              )}
+            </div>
+            <div class="hint">
+              ${escapeHtml(
+                syncMode === "graph-backed"
+                  ? "Sync is managed in plugin settings. Local cache and graph sync are both active."
+                  : "Sync is managed in plugin settings. RefDock is currently using local-only storage.",
               )}
             </div>
           </div>
@@ -2291,6 +2529,7 @@ async function main(): Promise<void> {
 
   const settingsCapableLogseq = logseq as typeof logseq & {
     useSettingsSchema?: (schema: typeof SETTINGS_SCHEMA) => void;
+    updateSettings?: (attrs: Record<string, unknown>) => void;
     onSettingsChanged?: (handler: (newSettings: Record<string, unknown>, oldSettings: Record<string, unknown>) => void) => void;
   };
 
@@ -2346,6 +2585,8 @@ async function main(): Promise<void> {
   logseq.App.onCurrentGraphChanged(() => {
     void (async () => {
       await app.refreshGraphState();
+      app.ensureSyncModeSettingInitialized();
+      app.applySyncModeFromSettings();
       await app.refreshContext();
     })();
   });
@@ -2355,7 +2596,7 @@ async function main(): Promise<void> {
   });
 
   settingsCapableLogseq.onSettingsChanged?.(() => {
-    void app.refreshContext();
+    void app.handleSettingsChanged();
   });
 
   await app.init();

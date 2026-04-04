@@ -4,6 +4,7 @@ export type ItemStatus = "unseen" | "seen" | "skipped";
 export type StatusFilter = "all" | ItemStatus;
 export type ThemeMode = "light" | "dark";
 export type ReferenceState = "linked" | "unlinked";
+export type SyncMode = "local-only" | "graph-backed";
 
 export interface WhiteboardInfo {
   id: string;
@@ -43,6 +44,17 @@ export interface ReviewStateRecord {
   items: Record<string, ReviewStateItem>;
 }
 
+export interface SavedSourceMeta {
+  reviewKey: string;
+  whiteboardId: string;
+  whiteboardName: string;
+  sourceType: SnapshotSourceType;
+  sourceValue: string;
+  normalizedSourceValue: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface Snapshot {
   id: string;
   whiteboardId: string;
@@ -56,11 +68,14 @@ export interface Snapshot {
 }
 
 export interface GraphState {
+  syncMode: SyncMode;
+  syncModeSettingInitialized: boolean;
   dockVisible: boolean;
   dockWidth: number;
   dockWidthsByWhiteboard: Record<string, number>;
   savedSourcesByWhiteboard: Record<string, string[]>;
   activeReviewKeyByWhiteboard: Record<string, string>;
+  sourceMetaByReviewKey: Record<string, SavedSourceMeta>;
   snapshotsByReviewKey: Record<string, Snapshot>;
   reviewStateByReviewKey: Record<string, ReviewStateRecord>;
   scrollByReviewKey: Record<string, number>;

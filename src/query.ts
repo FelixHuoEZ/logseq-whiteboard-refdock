@@ -40,8 +40,54 @@ type FallbackBlockSearchItem = {
   content: string;
 };
 
+type CandidateNormalizationStats = {
+  totalRows: number;
+  normalized: number;
+  invalidRows: number;
+  missingId: number;
+  missingUuid: number;
+  missingTitle: number;
+};
+
 let fallbackBlockSearchCacheGraph = "";
 let fallbackBlockSearchCache: FallbackBlockSearchItem[] = [];
+
+function createCandidateNormalizationStats(): CandidateNormalizationStats {
+  return {
+    totalRows: 0,
+    normalized: 0,
+    invalidRows: 0,
+    missingId: 0,
+    missingUuid: 0,
+    missingTitle: 0,
+  };
+}
+
+function appendCandidateNormalizationDiagnostics(
+  diagnostics: string[],
+  stats: CandidateNormalizationStats,
+): void {
+  const dropped = stats.totalRows - stats.normalized;
+  diagnostics.push(`candidate normalization: total=${stats.totalRows} kept=${stats.normalized} dropped=${dropped}`);
+
+  if (stats.missingUuid > 0) {
+    diagnostics.push(
+      `dropped candidates without stable uuid: ${stats.missingUuid} (some block/page results may be omitted)`,
+    );
+  }
+
+  if (stats.missingId > 0) {
+    diagnostics.push(`dropped candidates without db/id: ${stats.missingId}`);
+  }
+
+  if (stats.missingTitle > 0) {
+    diagnostics.push(`dropped candidates without title/content: ${stats.missingTitle}`);
+  }
+
+  if (stats.invalidRows > 0) {
+    diagnostics.push(`dropped malformed candidate rows: ${stats.invalidRows}`);
+  }
+}
 
 function chunkValues<T>(values: T[], size: number): T[][] {
   if (values.length === 0) {
@@ -404,12 +450,23 @@ function normalizePageContext(value: PulledPageContext | undefined) {
 }
 
 function normalizeCandidate(row: unknown): CandidatePage | null {
+  return normalizeCandidateWithStats(row);
+}
+
+function normalizeCandidateWithStats(
+  row: unknown,
+  stats?: CandidateNormalizationStats,
+): CandidatePage | null {
   const pulled = (Array.isArray(row) ? row[0] : row) as PulledEntity | undefined;
   if (!pulled) {
+    if (stats) {
+      stats.totalRows += 1;
+      stats.invalidRows += 1;
+    }
     return null;
   }
 
-  return normalizeNativeCandidate(pulled, normalizePageContext(pulled["block/page"]));
+  return normalizeNativeCandidate(pulled, normalizePageContext(pulled["block/page"]), stats);
 }
 
 function getHostScope(): NativeScope | null {
@@ -615,8 +672,19 @@ function normalizeNativePageContext(value: unknown): CandidatePage["page"] | und
   };
 }
 
-function normalizeNativeCandidate(value: unknown, fallbackPage?: CandidatePage["page"]): CandidatePage | null {
+function normalizeNativeCandidate(
+  value: unknown,
+  fallbackPage?: CandidatePage["page"],
+  stats?: CandidateNormalizationStats,
+): CandidatePage | null {
+  if (stats) {
+    stats.totalRows += 1;
+  }
+
   if (!value || typeof value !== "object") {
+    if (stats) {
+      stats.invalidRows += 1;
+    }
     return null;
   }
 
@@ -628,7 +696,24 @@ function normalizeNativeCandidate(value: unknown, fallbackPage?: CandidatePage["
   const name = getStringField(record, ["block/name", "name"]);
   const originalName = getStringField(record, ["block/original-name", "originalName"]);
   const title = rawTitle ?? content ?? originalName ?? name;
-  if (typeof id !== "number" || !uuid || !title) {
+  if (typeof id !== "number") {
+    if (stats) {
+      stats.missingId += 1;
+    }
+    return null;
+  }
+
+  if (!uuid) {
+    if (stats) {
+      stats.missingUuid += 1;
+    }
+    return null;
+  }
+
+  if (!title) {
+    if (stats) {
+      stats.missingTitle += 1;
+    }
     return null;
   }
 
@@ -637,6 +722,10 @@ function normalizeNativeCandidate(value: unknown, fallbackPage?: CandidatePage["
   const page =
     normalizeNativePageContext(record["block/page"] ?? record.page) ??
     fallbackPage;
+
+  if (stats) {
+    stats.normalized += 1;
+  }
 
   return {
     id,
@@ -663,7 +752,10 @@ function normalizeNativeCandidate(value: unknown, fallbackPage?: CandidatePage["
   };
 }
 
-async function queryNativePageCandidates(pageName: string): Promise<CandidatePage[] | null> {
+async function queryNativePageCandidates(
+  pageName: string,
+  normalizationStats?: CandidateNormalizationStats,
+): Promise<CandidatePage[] | null> {
   try {
     const nativeFn = getNativeFunction("$frontend$db$model$get_page_unlinked_references$$");
     if (!nativeFn) {
@@ -685,7 +777,7 @@ async function queryNativePageCandidates(pageName: string): Promise<CandidatePag
       const page = normalizeNativePageContext(group[0]);
       const blocks = Array.isArray(group[1]) ? group[1] : [];
       for (const block of blocks) {
-        const candidate = normalizeNativeCandidate(block, page);
+        const candidate = normalizeNativeCandidate(block, page, normalizationStats);
         if (candidate) {
           candidates.push(candidate);
         }
@@ -720,7 +812,10 @@ function buildNativeLimitOptions(limit: number): unknown {
   return new (mapConstructor as new (...args: unknown[]) => unknown)(null, 1, [limitKeyword, limit], null);
 }
 
-async function queryPagesByOriginalNames(originalNames: string[]): Promise<CandidatePage[]> {
+async function queryPagesByOriginalNames(
+  originalNames: string[],
+  normalizationStats?: CandidateNormalizationStats,
+): Promise<CandidatePage[]> {
   const uniqueNames = uniqueTerms(originalNames);
   if (uniqueNames.length === 0) {
     return [];
@@ -748,7 +843,7 @@ async function queryPagesByOriginalNames(originalNames: string[]): Promise<Candi
   );
 
   return rows
-    .map((row) => normalizeCandidate(row))
+    .map((row) => normalizeCandidateWithStats(row, normalizationStats))
     .filter((candidate): candidate is CandidatePage => candidate !== null);
 }
 
@@ -793,7 +888,10 @@ async function hasWarmFallbackBlockSearchIndex(): Promise<boolean> {
   return fallbackBlockSearchCacheGraph === graphKey && fallbackBlockSearchCache.length > 0;
 }
 
-async function queryCandidatesByUuids(uuids: string[]): Promise<CandidatePage[]> {
+async function queryCandidatesByUuids(
+  uuids: string[],
+  normalizationStats?: CandidateNormalizationStats,
+): Promise<CandidatePage[]> {
   const uniqueUuids = uniqueTerms(uuids);
   if (uniqueUuids.length === 0) {
     return [];
@@ -821,7 +919,7 @@ async function queryCandidatesByUuids(uuids: string[]): Promise<CandidatePage[]>
   );
 
   return rows
-    .map((row) => normalizeCandidate(row))
+    .map((row) => normalizeCandidateWithStats(row, normalizationStats))
     .filter((candidate): candidate is CandidatePage => candidate !== null);
 }
 
@@ -841,11 +939,14 @@ function dedupeCandidates(candidates: CandidatePage[]): CandidatePage[] {
   return deduped;
 }
 
-async function queryNativeKeywordCandidatesForTerms(searchTerms: string[]): Promise<CandidatePage[]> {
+async function queryNativeKeywordCandidatesForTerms(
+  searchTerms: string[],
+  normalizationStats?: CandidateNormalizationStats,
+): Promise<CandidatePage[]> {
   const merged: CandidatePage[] = [];
 
   for (const term of uniqueTerms(searchTerms)) {
-    const candidates = await queryNativeKeywordCandidates(term);
+    const candidates = await queryNativeKeywordCandidates(term, normalizationStats);
     if (candidates) {
       merged.push(...candidates);
     }
@@ -854,7 +955,10 @@ async function queryNativeKeywordCandidatesForTerms(searchTerms: string[]): Prom
   return dedupeCandidates(merged);
 }
 
-async function queryNativeKeywordCandidates(keyword: string): Promise<CandidatePage[] | null> {
+async function queryNativeKeywordCandidates(
+  keyword: string,
+  normalizationStats?: CandidateNormalizationStats,
+): Promise<CandidatePage[] | null> {
   const repo = getCurrentRepoFromNative();
   const blockSearch = getNativeFunction("$frontend$search$block_search$$");
   const pageSearch = getNativeFunction("$frontend$search$page_search$cljs$0core$0IFn$0_invoke$0arity$02$$");
@@ -886,8 +990,8 @@ async function queryNativeKeywordCandidates(keyword: string): Promise<CandidateP
       : [];
 
     const [pageCandidates, blockCandidates] = await Promise.all([
-      queryPagesByOriginalNames(normalizedPageNames),
-      queryCandidatesByUuids(blockUuids),
+      queryPagesByOriginalNames(normalizedPageNames, normalizationStats),
+      queryCandidatesByUuids(blockUuids, normalizationStats),
     ]);
 
     return dedupeCandidates([...pageCandidates, ...blockCandidates]);
@@ -899,6 +1003,7 @@ async function queryNativeKeywordCandidates(keyword: string): Promise<CandidateP
 async function queryFallbackKeywordCandidates(
   whiteboard: WhiteboardInfo,
   keyword: string,
+  normalizationStats?: CandidateNormalizationStats,
 ): Promise<CandidatePage[]> {
   const normalizedQuery = normalizeSearchText(keyword);
   if (!normalizedQuery) {
@@ -921,13 +1026,14 @@ async function queryFallbackKeywordCandidates(
     .slice(0, 500)
     .map((item) => item.blockUuid);
 
-  return queryCandidatesByUuids(blockUuids);
+  return queryCandidatesByUuids(blockUuids, normalizationStats);
 }
 
 async function queryFallbackPageCandidates(
   whiteboard: WhiteboardInfo,
   sourcePage: GenericEntity,
   sourceTitle: string,
+  normalizationStats?: CandidateNormalizationStats,
 ): Promise<CandidatePage[]> {
   const searchTerms = getSearchTermsFromEntity(sourcePage, sourceTitle).map(normalizeSearchText).filter(Boolean);
   if (searchTerms.length === 0) {
@@ -954,7 +1060,7 @@ async function queryFallbackPageCandidates(
     .slice(0, 500)
     .map((item) => item.blockUuid);
 
-  return queryCandidatesByUuids(blockUuids);
+  return queryCandidatesByUuids(blockUuids, normalizationStats);
 }
 
 async function queryCandidateIds(searchTerms: string[]): Promise<number[]> {
@@ -1002,6 +1108,7 @@ async function queryCandidateIds(searchTerms: string[]): Promise<number[]> {
 async function queryCandidatesBySearchTerms(
   searchTerms: string[],
   diagnostics?: string[],
+  normalizationStats?: CandidateNormalizationStats,
 ): Promise<CandidatePage[]> {
   const normalizedTerms = uniqueTerms(searchTerms.map(normalizeSearchText));
   if (normalizedTerms.length === 0) {
@@ -1054,7 +1161,7 @@ async function queryCandidatesBySearchTerms(
   }
 
   const normalizedCandidates = mergedRows
-    .map((row) => normalizeCandidate(row))
+    .map((row) => normalizeCandidateWithStats(row, normalizationStats))
     .filter((candidate): candidate is CandidatePage => candidate !== null);
 
   diagnostics?.push(`datascript normalized candidates before dedupe: ${normalizedCandidates.length}`);
@@ -1181,6 +1288,7 @@ async function buildSnapshot(params: {
   prefetchedCandidates?: CandidatePage[] | null;
   allowQueryFallback?: boolean;
   diagnostics?: string[];
+  normalizationStats?: CandidateNormalizationStats;
 }): Promise<Snapshot> {
   const keyword = params.keyword.trim();
   if (!keyword) {
@@ -1195,8 +1303,12 @@ async function buildSnapshot(params: {
   if (candidates.length === 0 && params.allowQueryFallback !== false) {
     const candidateIds = await queryCandidateIds(searchTerms);
     diagnostics.push(`datascript fallback ids: ${candidateIds.length}`);
-    candidates = await queryCandidatesBySearchTerms(searchTerms, diagnostics);
+    candidates = await queryCandidatesBySearchTerms(searchTerms, diagnostics, params.normalizationStats);
     diagnostics.push(`datascript fallback candidates: ${candidates.length}`);
+  }
+
+  if (params.normalizationStats) {
+    appendCandidateNormalizationDiagnostics(diagnostics, params.normalizationStats);
   }
 
   diagnostics.push(`candidates before filtering: ${candidates.length}`);
@@ -1334,7 +1446,8 @@ export async function createSnapshotFromKeyword(
 ): Promise<Snapshot> {
   const trimmedKeyword = keyword.trim();
   const diagnostics = [`mode: keyword`, `source: ${trimmedKeyword}`];
-  const nativeCandidates = await queryNativeKeywordCandidates(trimmedKeyword);
+  const normalizationStats = createCandidateNormalizationStats();
+  const nativeCandidates = await queryNativeKeywordCandidates(trimmedKeyword, normalizationStats);
   diagnostics.push(
     `native keyword candidates: ${nativeCandidates ? nativeCandidates.length : "unavailable"}`,
   );
@@ -1343,7 +1456,7 @@ export async function createSnapshotFromKeyword(
       ? nativeCandidates
       : await withDeferredTimeoutMessage(
           "Keyword search timed out while loading the local fallback index.",
-          () => queryFallbackKeywordCandidates(whiteboard, trimmedKeyword),
+          () => queryFallbackKeywordCandidates(whiteboard, trimmedKeyword, normalizationStats),
         );
   if (!nativeCandidates || nativeCandidates.length === 0) {
     diagnostics.push(`local keyword fallback candidates: ${candidates.length}`);
@@ -1361,6 +1474,7 @@ export async function createSnapshotFromKeyword(
         prefetchedCandidates: candidates,
         allowQueryFallback: candidates.length === 0,
         diagnostics,
+        normalizationStats,
       }),
   );
 }
@@ -1370,6 +1484,7 @@ export async function createSnapshotFromPage(
   pageName: string,
 ): Promise<Snapshot> {
   const diagnostics = [`mode: page`, `source: ${pageName.trim()}`];
+  const normalizationStats = createCandidateNormalizationStats();
   const sourcePage = await withDeferredTimeoutMessage(
     "Page search timed out while loading the source page.",
     () => logseq.Editor.getPage(pageName.trim()),
@@ -1393,10 +1508,11 @@ export async function createSnapshotFromPage(
   diagnostics.push(`search terms: ${searchTerms.join(" | ")}`);
   const nativePageCandidates = await queryNativePageCandidates(
     ((sourcePage as { name?: string }).name ?? pageName).trim(),
+    normalizationStats,
   );
   diagnostics.push(`native page candidates: ${nativePageCandidates ? nativePageCandidates.length : "unavailable"}`);
 
-  const nativeKeywordCandidates = await queryNativeKeywordCandidatesForTerms(searchTerms);
+  const nativeKeywordCandidates = await queryNativeKeywordCandidatesForTerms(searchTerms, normalizationStats);
   diagnostics.push(`native keyword companion candidates: ${nativeKeywordCandidates.length}`);
 
   let prefetchedCandidates = dedupeCandidates([...(nativePageCandidates ?? []), ...nativeKeywordCandidates]);
@@ -1408,7 +1524,7 @@ export async function createSnapshotFromPage(
   if (prefetchedCandidates.length === 0 && warmFallbackIndex) {
     prefetchedCandidates = await withDeferredTimeoutMessage(
       "Page search timed out while loading the local fallback index.",
-      () => queryFallbackPageCandidates(whiteboard, sourcePage as GenericEntity, sourceTitle),
+      () => queryFallbackPageCandidates(whiteboard, sourcePage as GenericEntity, sourceTitle, normalizationStats),
     );
     diagnostics.push(`local page fallback candidates: ${prefetchedCandidates.length}`);
   }
@@ -1426,6 +1542,7 @@ export async function createSnapshotFromPage(
         prefetchedCandidates,
         allowQueryFallback: prefetchedCandidates.length === 0,
         diagnostics,
+        normalizationStats,
       }),
   );
 }
