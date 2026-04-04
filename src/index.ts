@@ -1,7 +1,7 @@
 import "@logseq/libs";
 
 import { createSnapshotFromKeyword, createSnapshotFromPage, getCurrentWhiteboard } from "./query";
-import { readWhiteboardSyncState, writeWhiteboardSyncState } from "./sync";
+import { getSyncIndexPageName, getWhiteboardSyncPageName, readWhiteboardSyncState, writeWhiteboardSyncState } from "./sync";
 import { DEFAULT_DOCK_WIDTH, buildReviewKey, getGraphStorageKey, loadGraphState, normalizeSourceValue, saveGraphState } from "./storage";
 import type {
   GraphState,
@@ -17,6 +17,7 @@ import type {
   ThemeMode,
   WhiteboardInfo,
 } from "./types";
+import type { SyncSourceSummary } from "./sync";
 
 const APP_ROOT_ID = "whiteboard-refdock-app";
 const HOST_CONTAINER_ID = "whiteboard-refdock-host";
@@ -25,6 +26,7 @@ const MIN_WIDTH = 320;
 const DEFAULT_MAX_WIDTH = 560;
 type SurfaceMode = "iframe" | "host";
 type ReferenceFilter = ReferenceState;
+type GraphSyncStatus = "local-only" | "pending" | "syncing" | "synced" | "error";
 const SETTINGS_SCHEMA = [
   {
     key: "enableGraphSync",
@@ -89,6 +91,9 @@ class WhiteboardRefDockApp {
   private resizeCleanup: (() => void) | null = null;
   private syncWriteTimer: number | null = null;
   private syncWriteInFlight = false;
+  private graphSyncStatus: GraphSyncStatus = "local-only";
+  private lastGraphSyncAt: number | null = null;
+  private graphSyncError = "";
 
   constructor(root: HTMLElement) {
     this.iframeRoot = root;
@@ -107,6 +112,8 @@ class WhiteboardRefDockApp {
     const currentGraph = await logseq.App.getCurrentGraph();
     this.storageKey = getGraphStorageKey(currentGraph);
     this.graphState = loadGraphState(this.storageKey);
+    this.graphSyncStatus = this.getSyncMode() === "graph-backed" ? "synced" : "local-only";
+    this.graphSyncError = "";
   }
 
   private async hydrateCurrentWhiteboardFromGraphSync(): Promise<void> {
@@ -159,12 +166,10 @@ class WhiteboardRefDockApp {
   }
 
   async toggleDock(): Promise<void> {
-    this.debugSurface("toggleDock:before");
     this.graphState.dockVisible = !this.graphState.dockVisible;
     this.persist();
     await this.syncDockSurface();
     this.render();
-    this.debugSurface("toggleDock:after");
   }
 
   async revealDock(): Promise<void> {
@@ -258,6 +263,47 @@ class WhiteboardRefDockApp {
     return this.graphState.syncMode;
   }
 
+  private getGraphSyncStatusLabel(): string {
+    if (this.getSyncMode() !== "graph-backed") {
+      return "Local only";
+    }
+
+    switch (this.graphSyncStatus) {
+      case "pending":
+        return "Sync pending";
+      case "syncing":
+        return "Syncing";
+      case "synced":
+        return this.lastGraphSyncAt
+          ? `Synced ${new Date(this.lastGraphSyncAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+          : "Synced";
+      case "error":
+        return "Sync failed";
+      default:
+        return "Graph sync enabled";
+    }
+  }
+
+  private getGraphSyncHint(): string {
+    if (this.getSyncMode() !== "graph-backed") {
+      return "Sync is managed in plugin settings. RefDock is currently using local-only storage.";
+    }
+
+    if (this.graphSyncStatus === "error" && this.graphSyncError) {
+      return `Graph sync failed: ${this.graphSyncError}`;
+    }
+
+    if (this.graphSyncStatus === "pending") {
+      return "Graph sync is queued. Local cache remains active.";
+    }
+
+    if (this.graphSyncStatus === "syncing") {
+      return "Graph sync is writing review state for the current whiteboard.";
+    }
+
+    return "Sync is managed in plugin settings. Local cache and graph sync are both active.";
+  }
+
   ensureSyncModeSettingInitialized(): void {
     if (this.graphState.syncModeSettingInitialized) {
       return;
@@ -286,6 +332,8 @@ class WhiteboardRefDockApp {
     }
 
     this.graphState.syncMode = nextMode;
+    this.graphSyncStatus = nextMode === "graph-backed" ? "synced" : "local-only";
+    this.graphSyncError = "";
     this.persist();
     return true;
   }
@@ -336,6 +384,9 @@ class WhiteboardRefDockApp {
       return;
     }
 
+    this.graphSyncStatus = "pending";
+    this.graphSyncError = "";
+
     if (this.syncWriteTimer != null) {
       window.clearTimeout(this.syncWriteTimer);
     }
@@ -350,8 +401,15 @@ class WhiteboardRefDockApp {
       return;
     }
 
+    if (this.syncWriteTimer != null) {
+      window.clearTimeout(this.syncWriteTimer);
+      this.syncWriteTimer = null;
+    }
+
     this.syncWriteInFlight = true;
-    this.syncWriteTimer = null;
+    this.graphSyncStatus = "syncing";
+    this.graphSyncError = "";
+    this.render();
 
     try {
       const reviewKeys = this.getSavedReviewKeysForWhiteboard(this.currentWhiteboard.id);
@@ -368,12 +426,62 @@ class WhiteboardRefDockApp {
           .filter((entry): entry is readonly [string, ReviewStateRecord] => entry !== null),
       );
 
-      await writeWhiteboardSyncState(this.currentWhiteboard, sourceMetas, reviewStateByReviewKey);
+      const summariesByReviewKey = Object.fromEntries(
+        reviewKeys.map((reviewKey) => [
+          reviewKey,
+          this.buildSyncSourceSummary(
+            this.graphState.snapshotsByReviewKey[reviewKey] ?? null,
+            this.graphState.reviewStateByReviewKey[reviewKey],
+          ),
+        ]),
+      );
+
+      await writeWhiteboardSyncState(this.currentWhiteboard, sourceMetas, reviewStateByReviewKey, summariesByReviewKey);
+      this.graphSyncStatus = "synced";
+      this.lastGraphSyncAt = Date.now();
+      this.graphSyncError = "";
     } catch (error) {
       console.warn("whiteboard-refdock graph sync write failed", error);
+      this.graphSyncStatus = "error";
+      this.graphSyncError = getRenderableErrorMessage(error);
     } finally {
       this.syncWriteInFlight = false;
+      this.render();
     }
+  }
+
+  private async openCurrentSyncPage(): Promise<void> {
+    if (!this.currentWhiteboard) {
+      return;
+    }
+
+    if (this.getSyncMode() === "graph-backed") {
+      await this.flushCurrentWhiteboardSync();
+    }
+
+    const pageName = getWhiteboardSyncPageName(this.currentWhiteboard.id);
+    const page = await logseq.Editor.getPage(pageName);
+    if (!page) {
+      await logseq.UI.showMsg("No graph sync page exists for this whiteboard yet.", "warning");
+      return;
+    }
+
+    logseq.App.pushState("page", { name: pageName });
+  }
+
+  private async openSyncIndexPage(): Promise<void> {
+    if (this.getSyncMode() === "graph-backed") {
+      await this.flushCurrentWhiteboardSync();
+    }
+
+    const pageName = getSyncIndexPageName();
+    const page = await logseq.Editor.getPage(pageName);
+    if (!page) {
+      await logseq.UI.showMsg("No RefDock sync index page exists yet.", "warning");
+      return;
+    }
+
+    logseq.App.pushState("page", { name: pageName });
   }
 
   private getConfiguredMaxWidth(): number {
@@ -676,6 +784,46 @@ class WhiteboardRefDockApp {
     return counts;
   }
 
+  private buildSyncSourceSummary(
+    snapshot: Snapshot | null,
+    reviewState?: ReviewStateRecord,
+  ): SyncSourceSummary {
+    if (!snapshot) {
+      const reviewItems = Object.values(reviewState?.items ?? {});
+      return {
+        seenCount: reviewItems.filter((item) => item.status === "seen").length,
+        skippedCount: reviewItems.filter((item) => item.status === "skipped").length,
+      };
+    }
+
+    const summary: SyncSourceSummary = {
+      totalItems: snapshot.items.length,
+      linkedCount: 0,
+      unlinkedCount: 0,
+      unseenCount: 0,
+      seenCount: 0,
+      skippedCount: 0,
+    };
+
+    for (const item of snapshot.items) {
+      if (item.referenceState === "linked") {
+        summary.linkedCount = (summary.linkedCount ?? 0) + 1;
+      } else {
+        summary.unlinkedCount = (summary.unlinkedCount ?? 0) + 1;
+      }
+
+      if (item.status === "seen") {
+        summary.seenCount += 1;
+      } else if (item.status === "skipped") {
+        summary.skippedCount += 1;
+      } else {
+        summary.unseenCount = (summary.unseenCount ?? 0) + 1;
+      }
+    }
+
+    return summary;
+  }
+
   private selectDefaultReferenceFilter(snapshot: Snapshot | null): void {
     if (!snapshot) {
       this.referenceFilter = "linked";
@@ -812,18 +960,6 @@ class WhiteboardRefDockApp {
     this.hostRoot = null;
   }
 
-  private debugSurface(event: string, extra: Record<string, unknown> = {}): void {
-    console.debug("[whiteboard-refdock]", event, {
-      dockVisible: this.graphState.dockVisible,
-      surfaceMode: this.surfaceMode,
-      whiteboard: this.currentWhiteboard?.name ?? null,
-      iframeDisplay: this.iframeRoot.style.display || "default",
-      hasFrameElement: Boolean(this.getPluginFrameElement()),
-      hasHostContainer: Boolean(this.hostContainer),
-      ...extra,
-    });
-  }
-
   private async syncDockSurface(): Promise<void> {
     const isActive = Boolean(this.currentWhiteboard && this.graphState.dockVisible);
     if (!isActive) {
@@ -835,7 +971,6 @@ class WhiteboardRefDockApp {
       this.hideHostSurface();
       this.setMainUIOverlayVisibility(false);
       logseq.hideMainUI({ restoreEditingCursor: false });
-      this.debugSurface("syncDockSurface:inactive");
       return;
     }
 
@@ -863,7 +998,6 @@ class WhiteboardRefDockApp {
 
       this.setMainUIOverlayVisibility(false);
       logseq.hideMainUI({ restoreEditingCursor: false });
-      this.debugSurface("syncDockSurface:host", { dockWidth });
       return;
     }
 
@@ -874,7 +1008,6 @@ class WhiteboardRefDockApp {
     this.hideHostSurface();
     this.setMainUIOverlayVisibility(true, dockWidth);
     logseq.showMainUI({ autoFocus: false });
-    this.debugSurface("syncDockSurface:iframe", { dockWidth });
   }
 
   private async createSnapshot(): Promise<void> {
@@ -1236,6 +1369,14 @@ class WhiteboardRefDockApp {
       void this.refreshDock();
     });
 
+    root.querySelector<HTMLElement>("[data-action='open-current-sync-page']")?.addEventListener("click", () => {
+      void this.openCurrentSyncPage();
+    });
+
+    root.querySelector<HTMLElement>("[data-action='open-sync-index-page']")?.addEventListener("click", () => {
+      void this.openSyncIndexPage();
+    });
+
     root.querySelector<HTMLElement>("[data-action='start-resize']")?.addEventListener("pointerdown", (event) => {
       this.startResize(event);
     });
@@ -1399,7 +1540,6 @@ class WhiteboardRefDockApp {
     const visibleItems = this.getVisibleItems();
     const counts = this.getCounts(snapshot);
     const referenceCounts = this.getReferenceCounts(snapshot);
-    const syncMode = this.getSyncMode();
     const sourcePlaceholder = this.sourceType === "page" ? "Page name" : "Keyword";
     const trimmedSourceValue = this.sourceValue.trim();
     const draftReviewKey =
@@ -2088,6 +2228,82 @@ class WhiteboardRefDockApp {
           color: var(--muted-light);
         }
 
+        .sync-status-row {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+        }
+
+        .sync-actions {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .sync-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 9px;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 600;
+          background: rgba(59, 130, 246, 0.10);
+          color: #1d4ed8;
+        }
+
+        .sync-chip.local-only {
+          background: rgba(148, 163, 184, 0.14);
+          color: #475569;
+        }
+
+        .sync-chip.pending {
+          background: rgba(245, 158, 11, 0.14);
+          color: #b45309;
+        }
+
+        .sync-chip.syncing {
+          background: rgba(59, 130, 246, 0.14);
+          color: #1d4ed8;
+        }
+
+        .sync-chip.synced {
+          background: rgba(16, 185, 129, 0.14);
+          color: #047857;
+        }
+
+        .sync-chip.error {
+          background: rgba(239, 68, 68, 0.14);
+          color: #b91c1c;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .sync-chip.local-only {
+          background: rgba(148, 163, 184, 0.14);
+          color: #cbd5e1;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .sync-chip.pending {
+          background: rgba(245, 158, 11, 0.18);
+          color: #fde68a;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .sync-chip.syncing {
+          background: rgba(59, 130, 246, 0.18);
+          color: #bfdbfe;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .sync-chip.synced {
+          background: rgba(16, 185, 129, 0.18);
+          color: #86efac;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .sync-chip.error {
+          background: rgba(239, 68, 68, 0.18);
+          color: #fca5a5;
+        }
+
         .spacer {
           flex: 1;
         }
@@ -2123,31 +2339,6 @@ class WhiteboardRefDockApp {
           transform: scaleY(1.06);
         }
 
-        .resize-handle::after {
-          content: "Drag";
-          position: absolute;
-          left: 50%;
-          bottom: 18px;
-          transform: translate(-50%, 6px);
-          padding: 3px 7px;
-          border-radius: 999px;
-          background: rgba(15, 23, 42, 0.78);
-          color: rgba(248, 250, 252, 0.92);
-          font-size: 10px;
-          font-weight: 600;
-          letter-spacing: 0.02em;
-          opacity: 0;
-          pointer-events: none;
-          transition: opacity 0.15s ease, transform 0.15s ease;
-          white-space: nowrap;
-        }
-
-        .resize-handle:hover::after,
-        .panel[data-resizing="true"] .resize-handle::after {
-          opacity: 1;
-          transform: translate(-50%, 0);
-        }
-
         .panel[data-resizing="true"] .resize-handle::before {
           background: rgba(37, 99, 235, 0.58);
           transform: scaleY(1.12);
@@ -2157,11 +2348,6 @@ class WhiteboardRefDockApp {
         #${APP_ROOT_ID}[data-theme="dark"] .resize-handle::before {
           background: rgba(96, 165, 250, 0.24);
           box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.14);
-        }
-
-        #${APP_ROOT_ID}[data-theme="dark"] .resize-handle::after {
-          background: rgba(15, 23, 42, 0.92);
-          color: rgba(241, 245, 249, 0.92);
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] .panel[data-resizing="true"] .resize-handle::before {
@@ -2317,9 +2503,15 @@ class WhiteboardRefDockApp {
               <button class="chip-button ${this.sourceType === "page" ? "active" : ""}" data-source-type="page">Page</button>
               <button class="chip-button ${this.sourceType === "keyword" ? "active" : ""}" data-source-type="keyword">Keyword</button>
             </div>
-            <span class="source-chip">${escapeHtml(
-              syncMode === "graph-backed" ? "Graph sync enabled" : "Local only",
-            )}</span>
+            <div class="sync-status-row">
+              <span class="sync-chip ${escapeAttribute(this.getSyncMode() === "graph-backed" ? this.graphSyncStatus : "local-only")}">
+                ${escapeHtml(this.getGraphSyncStatusLabel())}
+              </span>
+              <div class="sync-actions">
+                <button class="ghost-button" data-action="open-current-sync-page">Current sync file</button>
+                <button class="ghost-button" data-action="open-sync-index-page">All sync files</button>
+              </div>
+            </div>
           </div>
           <div class="controls-grid">
             <input
@@ -2342,11 +2534,7 @@ class WhiteboardRefDockApp {
               )}
             </div>
             <div class="hint">
-              ${escapeHtml(
-                syncMode === "graph-backed"
-                  ? "Sync is managed in plugin settings. Local cache and graph sync are both active."
-                  : "Sync is managed in plugin settings. RefDock is currently using local-only storage.",
-              )}
+              ${escapeHtml(this.getGraphSyncHint())}
             </div>
           </div>
         </section>
@@ -2600,7 +2788,6 @@ async function main(): Promise<void> {
   });
 
   await app.init();
-  console.info("logseq-whiteboard-refdock loaded");
 }
 
 void logseq.ready(main).catch((error) => {
