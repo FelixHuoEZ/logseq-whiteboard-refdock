@@ -52,43 +52,61 @@
   <rect x="950" y="50" width="286" height="760" rx="32" stroke="#D5E0EA"/>
 
   <text x="982" y="104" fill="#2B5EDB" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" letter-spacing="0.14em">REVIEW DOCK</text>
-  <text x="982" y="142" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700">Whiteboard RefDock</text>
-  <text x="982" y="176" fill="#64748B" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15">Saved snapshots for linked and</text>
-  <text x="982" y="198" fill="#64748B" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15">unlinked references inside Logseq.</text>
+  <text x="982" y="140" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700">test333</text>
+  <rect x="1118" y="84" width="86" height="28" rx="999" fill="#DBEAFE"/>
+  <text x="1161" y="102" fill="#1D4ED8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" font-weight="700" text-anchor="middle">Graph sync</text>
+  <rect x="982" y="154" width="78" height="28" rx="999" fill="#EEF2FF"/>
+  <text x="1021" y="172" fill="#4338CA" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" font-weight="700" text-anchor="middle">3 sources</text>
+  <rect x="1068" y="154" width="74" height="28" rx="999" fill="#ECFDF5"/>
+  <text x="1105" y="172" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" font-weight="700" text-anchor="middle">Synced</text>
 
-  <rect x="982" y="226" width="112" height="40" rx="14" fill="#DBEAFE"/>
-  <text x="1018" y="251" fill="#1D4ED8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700">Linked</text>
-  <rect x="1104" y="226" width="100" height="40" rx="14" fill="#ECFDF5"/>
-  <text x="1132" y="251" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700">Unlinked</text>
+  <text x="982" y="214" fill="#64748B" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700" letter-spacing="0.08em">SAVED SOURCES</text>
+  <rect x="982" y="228" width="222" height="134" rx="18" fill="#F8FBFD" stroke="#D8E2EC"/>
+
+  <rect x="994" y="240" width="198" height="32" rx="12" fill="#DBEAFE"/>
+  <text x="1008" y="260" fill="#1D4ED8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700">page</text>
+  <text x="1050" y="260" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700">决策</text>
+  <rect x="1142" y="247" width="38" height="18" rx="999" fill="#FFFFFF"/>
+  <text x="1161" y="259" fill="#475569" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">710</text>
+
+  <rect x="994" y="280" width="198" height="32" rx="12" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="1008" y="300" fill="#0F766E" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700">page</text>
+  <text x="1050" y="300" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700">贝叶斯</text>
+  <rect x="1142" y="287" width="38" height="18" rx="999" fill="#F8FAFC"/>
+  <text x="1161" y="299" fill="#475569" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">132</text>
+
+  <rect x="994" y="320" width="198" height="30" rx="12" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text x="1008" y="339" fill="#7C3AED" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" font-weight="700">keyword</text>
+  <text x="1078" y="339" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700">先验</text>
+  <rect x="1142" y="326" width="38" height="18" rx="999" fill="#F8FAFC"/>
+  <text x="1161" y="338" fill="#475569" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">48</text>
+
+  <rect x="982" y="386" width="104" height="38" rx="14" fill="#DBEAFE"/>
+  <text x="1034" y="410" fill="#1D4ED8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" text-anchor="middle">Linked</text>
+  <rect x="1096" y="386" width="108" height="38" rx="14" fill="#ECFDF5"/>
+  <text x="1150" y="410" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" text-anchor="middle">Unlinked</text>
 
   <g filter="url(#card-shadow)">
-    <rect x="982" y="288" width="222" height="108" rx="18" fill="#FFFFFF" stroke="#D8E2EC"/>
-    <rect x="998" y="306" width="8" height="72" rx="999" fill="#2563EB"/>
-    <text x="1024" y="326" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700">Drag blocks into</text>
-    <text x="1024" y="350" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700">the whiteboard</text>
-    <rect x="1024" y="362" width="84" height="24" rx="999" fill="#DBEAFE"/>
-    <text x="1046" y="378" fill="#1D4ED8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700">linked</text>
-    <rect x="1114" y="362" width="74" height="24" rx="999" fill="#EEF2FF"/>
-    <text x="1134" y="378" fill="#4338CA" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700">block</text>
+    <rect x="982" y="446" width="222" height="122" rx="18" fill="#FFFFFF" stroke="#D8E2EC"/>
+    <rect x="998" y="464" width="8" height="84" rx="999" fill="#2563EB"/>
+    <text x="1024" y="486" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700">Use linked blocks</text>
+    <text x="1024" y="510" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700">without losing state</text>
+    <rect x="1024" y="524" width="54" height="24" rx="999" fill="#ECFDF5"/>
+    <text x="1051" y="540" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">unseen</text>
+    <rect x="1086" y="524" width="54" height="24" rx="999" fill="#DCFCE7"/>
+    <text x="1113" y="540" fill="#15803D" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">seen</text>
+    <rect x="1148" y="524" width="54" height="24" rx="999" fill="#FEF3C7"/>
+    <text x="1175" y="540" fill="#B45309" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">skip</text>
   </g>
 
-  <g filter="url(#card-shadow)">
-    <rect x="982" y="414" width="222" height="118" rx="18" fill="#FFFFFF" stroke="#D8E2EC"/>
-    <rect x="998" y="434" width="8" height="78" rx="999" fill="#10B981"/>
-    <text x="1024" y="454" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700">Keep review state</text>
-    <text x="1024" y="478" fill="#0F172A" font-family="ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700">between sessions</text>
-    <rect x="1024" y="490" width="54" height="24" rx="999" fill="#ECFDF5"/>
-    <text x="1051" y="506" fill="#047857" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">unseen</text>
-    <rect x="1086" y="490" width="54" height="24" rx="999" fill="#DCFCE7"/>
-    <text x="1113" y="506" fill="#15803D" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">seen</text>
-    <rect x="1148" y="490" width="54" height="24" rx="999" fill="#FEF3C7"/>
-    <text x="1175" y="506" fill="#B45309" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle">skip</text>
-  </g>
+  <rect x="982" y="592" width="222" height="126" rx="20" fill="#0F172A"/>
+  <text x="1006" y="624" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="16.5" font-weight="700">Graph-backed</text>
+  <text x="1006" y="646" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="16.5" font-weight="700">review state</text>
+  <text x="1006" y="672" fill="#94A3B8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13.5">Saved sources stay with the board.</text>
+  <text x="1006" y="692" fill="#94A3B8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13.5">Snapshot cache stays local.</text>
 
-  <rect x="982" y="562" width="222" height="178" rx="22" fill="#0F172A"/>
-  <text x="1006" y="608" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Built for</text>
-  <text x="1006" y="636" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Logseq Whiteboard</text>
-  <text x="1006" y="676" fill="#94A3B8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15">Dedicated dock.</text>
-  <text x="1006" y="700" fill="#94A3B8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15">Native drag flow.</text>
-  <text x="1006" y="724" fill="#94A3B8" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15">Persistent review queue.</text>
+  <rect x="1006" y="700" width="86" height="24" rx="10" fill="#1E293B" stroke="#334155"/>
+  <text x="1049" y="716" fill="#E2E8F0" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9.8" font-weight="700" text-anchor="middle">Current sync file</text>
+  <rect x="1102" y="700" width="84" height="24" rx="10" fill="#1E293B" stroke="#334155"/>
+  <text x="1144" y="716" fill="#E2E8F0" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9.8" font-weight="700" text-anchor="middle">All sync files</text>
 </svg>
