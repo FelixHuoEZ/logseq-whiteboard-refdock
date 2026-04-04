@@ -105,6 +105,7 @@ class WhiteboardRefDockApp {
   private graphSyncStatus: GraphSyncStatus = "local-only";
   private lastGraphSyncAt: number | null = null;
   private graphSyncError = "";
+  private contextRefreshToken = 0;
 
   constructor(root: HTMLElement) {
     this.iframeRoot = root;
@@ -171,14 +172,36 @@ class WhiteboardRefDockApp {
   }
 
   async refreshContext(): Promise<void> {
-    this.currentWhiteboard = await getCurrentWhiteboard();
+    const refreshToken = ++this.contextRefreshToken;
+    const routeWhiteboardName = this.getRouteWhiteboardName();
+
+    if (routeWhiteboardName && (!this.currentWhiteboard || !this.isSameWhiteboardName(this.currentWhiteboard.name, routeWhiteboardName))) {
+      this.currentWhiteboard = null;
+      await this.syncDockSurface();
+      this.render();
+    }
+
+    const nextWhiteboard = await this.resolveCurrentWhiteboard(routeWhiteboardName);
+    if (refreshToken !== this.contextRefreshToken) {
+      return;
+    }
+
+    this.currentWhiteboard = nextWhiteboard;
     await this.hydrateCurrentWhiteboardFromGraphSync();
+    if (refreshToken !== this.contextRefreshToken) {
+      return;
+    }
+
     this.syncActiveReviewKey();
     this.syncSourceInputFromActiveSnapshot();
     this.setCurrentDockWidth(this.getCurrentDockWidth());
     this.selectDefaultReferenceFilter(this.getActiveSnapshot());
     this.persist();
     await this.syncDockSurface();
+    if (refreshToken !== this.contextRefreshToken) {
+      return;
+    }
+
     this.render();
     await this.ensureActiveSnapshotLoaded();
   }
@@ -685,11 +708,15 @@ class WhiteboardRefDockApp {
     if (!snapshot) {
       const activeReviewKey = this.getActiveReviewKey();
       if (!activeReviewKey) {
+        this.sourceType = "page";
+        this.sourceValue = "";
         return;
       }
 
       const meta = this.graphState.sourceMetaByReviewKey[activeReviewKey];
       if (!meta) {
+        this.sourceType = "page";
+        this.sourceValue = "";
         return;
       }
 
@@ -1004,6 +1031,53 @@ class WhiteboardRefDockApp {
     } catch (_error) {
       return null;
     }
+  }
+
+  private getRouteWhiteboardName(): string | null {
+    const path = this.getCurrentRoutePath();
+    if (!path || !path.startsWith("/whiteboard/")) {
+      return null;
+    }
+
+    const encodedName = path.slice("/whiteboard/".length).split("?")[0];
+    if (!encodedName) {
+      return null;
+    }
+
+    try {
+      return decodeURIComponent(encodedName);
+    } catch (_error) {
+      return encodedName;
+    }
+  }
+
+  private isSameWhiteboardName(left: string | null | undefined, right: string | null | undefined): boolean {
+    if (!left || !right) {
+      return false;
+    }
+
+    return left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
+  }
+
+  private async resolveCurrentWhiteboard(expectedRouteWhiteboardName: string | null): Promise<WhiteboardInfo | null> {
+    const maxAttempts = expectedRouteWhiteboardName ? 4 : 1;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const whiteboard = await getCurrentWhiteboard();
+      if (!expectedRouteWhiteboardName) {
+        return whiteboard;
+      }
+
+      if (whiteboard && this.isSameWhiteboardName(whiteboard.name, expectedRouteWhiteboardName)) {
+        return whiteboard;
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 80 * (attempt + 1)));
+      }
+    }
+
+    return null;
   }
 
   private ensureHostRoot(): HTMLElement | null {
