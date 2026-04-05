@@ -453,11 +453,9 @@ class WhiteboardRefDockApp {
     await this.syncDockSurface();
     const snapshot = this.getActiveSnapshot();
     this.error = "";
-    this.message = snapshot
-      ? `Dock opened. ${snapshot.items.length} saved items loaded.`
-      : "Dock opened.";
+    this.message = "";
     this.render();
-    await logseq.UI.showMsg("Whiteboard RefDock opened.", "success");
+    this.showToast(snapshot ? `RefDock opened. ${snapshot.items.length} saved items loaded.` : "Whiteboard RefDock opened.");
   }
 
   async refreshDock(): Promise<void> {
@@ -491,17 +489,19 @@ class WhiteboardRefDockApp {
     await this.syncDockSurface();
     const snapshot = this.getActiveSnapshot();
     this.error = "";
-    this.message = snapshot
-      ? `Dock refreshed. ${snapshot.items.length} saved items loaded.`
-      : "Dock refreshed.";
+    this.message = "";
     this.render();
-    await logseq.UI.showMsg("Whiteboard RefDock refreshed.", "success");
+    this.showToast(snapshot ? `RefDock refreshed. ${snapshot.items.length} saved items loaded.` : "Whiteboard RefDock refreshed.");
   }
 
   setThemeMode(mode: ThemeMode): void {
     this.logseqThemeMode = mode;
     this.applyThemePreference();
     this.render();
+  }
+
+  private showToast(message: string, level: "success" | "warning" | "error" = "success"): void {
+    void logseq.UI.showMsg(message, level);
   }
 
   private applyThemePreference(): void {
@@ -620,10 +620,12 @@ class WhiteboardRefDockApp {
     const didChangeSyncMode = this.applySyncModeFromSettings();
     if (didChangeSyncMode) {
       const syncMode = this.getSyncMode();
-      this.message =
+      const message =
         syncMode === "graph-backed"
           ? "Graph sync enabled for this graph. Local cache remains active."
           : "Local-only mode enabled. Existing graph-backed state was left intact.";
+      this.showToast(message);
+      this.message = "";
       this.error = "";
     }
 
@@ -2007,9 +2009,15 @@ class WhiteboardRefDockApp {
     this.render();
 
     try {
+      const reviewKey = buildReviewKey(whiteboard.id, this.sourceType, sourceValue);
+      const shouldPreserveReferenceFilter = Boolean(this.graphState.sourceMetaByReviewKey[reviewKey]);
       const snapshot = await this.buildSnapshotForSource(whiteboard, this.sourceType, sourceValue);
-      const mergedSnapshot = this.storeSnapshot(snapshot, { resetScroll: true, preserveReferenceFilter: false });
-      this.message = `Saved ${mergedSnapshot.items.length} snapshot items.`;
+      const mergedSnapshot = this.storeSnapshot(snapshot, {
+        resetScroll: true,
+        preserveReferenceFilter: shouldPreserveReferenceFilter,
+      });
+      this.message = "";
+      this.showToast(`Saved ${mergedSnapshot.items.length} snapshot items.`);
     } catch (error) {
       const message = getRenderableErrorMessage(error);
       this.setError(
@@ -2114,8 +2122,9 @@ class WhiteboardRefDockApp {
     this.selectDefaultReferenceFilter(this.getActiveSnapshot());
     this.persist();
     this.scheduleCurrentWhiteboardSync();
-    this.message = "Active source removed.";
+    this.message = "";
     this.error = "";
+    this.showToast("Active source removed.");
     this.render();
   }
 
@@ -2143,7 +2152,8 @@ class WhiteboardRefDockApp {
       const refreshedSnapshot = await this.buildSnapshotForSource(whiteboard, sourceType, sourceValue);
       const orderedSnapshot = this.preserveSnapshotItemOrder(existingSnapshot ?? null, refreshedSnapshot);
       const mergedSnapshot = this.storeSnapshot(orderedSnapshot, { resetScroll: false, preserveReferenceFilter: true });
-      this.message = `Refreshed ${mergedSnapshot.sourceValue}.`;
+      this.message = "";
+      this.showToast(`Refreshed ${mergedSnapshot.sourceValue}.`);
     } catch (error) {
       const message = getRenderableErrorMessage(error);
       this.setError(
@@ -2184,8 +2194,9 @@ class WhiteboardRefDockApp {
     this.selectDefaultReferenceFilter(this.getActiveSnapshot());
     this.persist();
     this.scheduleCurrentWhiteboardSync();
-    this.message = `Deleted source ${sourceValue}.`;
+    this.message = "";
     this.error = "";
+    this.showToast(`Deleted source ${sourceValue}.`);
     this.render();
   }
 
