@@ -10,6 +10,7 @@ import type {
   SnapshotSourceType,
   SourceTombstone,
   SyncMode,
+  ThemePreference,
 } from "./types";
 
 const STORAGE_PREFIX = "whiteboard-refdock:v4";
@@ -44,6 +45,10 @@ function normalizeSourceType(value: unknown): SnapshotSourceType {
 
 function normalizeSyncMode(value: unknown): SyncMode {
   return value === "graph-backed" || value === "local-only" ? value : "local-only";
+}
+
+function normalizeThemePreference(value: unknown): ThemePreference {
+  return value === "dark" || value === "light" || value === "auto" ? value : "auto";
 }
 
 function normalizeBoolean(value: unknown, fallback = false): boolean {
@@ -639,6 +644,7 @@ export function getDefaultGraphState(): GraphState {
   return {
     syncMode: "local-only",
     syncModeSettingInitialized: false,
+    themePreference: "auto",
     dockVisible: true,
     dockWidth: DEFAULT_DOCK_WIDTH,
     dockWidthsByWhiteboard: {},
@@ -707,6 +713,7 @@ export function loadGraphState(storageKey: string): GraphState {
         ...parsed,
         syncMode: normalizeSyncMode((parsed as Record<string, unknown>).syncMode),
         syncModeSettingInitialized: normalizeBoolean((parsed as Record<string, unknown>).syncModeSettingInitialized),
+        themePreference: normalizeThemePreference((parsed as Record<string, unknown>).themePreference),
         dockWidth: normalizedDockWidth,
         dockWidthsByWhiteboard: normalizedWidths,
         ...legacyState,
@@ -752,6 +759,7 @@ export function loadGraphState(storageKey: string): GraphState {
       ...parsed,
       syncMode: normalizeSyncMode((parsed as Record<string, unknown>).syncMode),
       syncModeSettingInitialized: normalizeBoolean((parsed as Record<string, unknown>).syncModeSettingInitialized),
+      themePreference: normalizeThemePreference((parsed as Record<string, unknown>).themePreference),
       dockWidth: normalizedDockWidth,
       dockWidthsByWhiteboard: normalizedWidths,
       savedSourcesByWhiteboard,

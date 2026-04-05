@@ -3,6 +3,7 @@ export type SnapshotItemType = "page" | "block";
 export type ItemStatus = "unseen" | "seen" | "skipped";
 export type StatusFilter = "all" | ItemStatus;
 export type ThemeMode = "light" | "dark";
+export type ThemePreference = ThemeMode | "auto";
 export type ReferenceState = "linked" | "unlinked";
 export type SyncMode = "local-only" | "graph-backed";
 
@@ -79,6 +80,7 @@ export interface Snapshot {
 export interface GraphState {
   syncMode: SyncMode;
   syncModeSettingInitialized: boolean;
+  themePreference: ThemePreference;
   dockVisible: boolean;
   dockWidth: number;
   dockWidthsByWhiteboard: Record<string, number>;

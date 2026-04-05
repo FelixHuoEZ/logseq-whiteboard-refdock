@@ -26,6 +26,7 @@ import type {
   SourceTombstone,
   SyncMode,
   ThemeMode,
+  ThemePreference,
   WhiteboardInfo,
 } from "./types";
 import type { SyncSourceSummary } from "./sync";
@@ -159,6 +160,28 @@ function getToggleDockShortcut(): string {
   return normalized ? normalizeShortcutForLogseq(normalized) : DEFAULT_TOGGLE_SHORTCUT_BINDING;
 }
 
+async function getInitialThemeMode(): Promise<ThemeMode> {
+  try {
+    const userConfigs = await logseq.App.getUserConfigs();
+    if (userConfigs.preferredThemeMode === "dark" || userConfigs.preferredThemeMode === "light") {
+      return userConfigs.preferredThemeMode;
+    }
+  } catch (_error) {
+    // Fall through to DOM/system detection.
+  }
+
+  const htmlTheme = document.documentElement.getAttribute("data-theme");
+  if (htmlTheme === "dark" || htmlTheme === "light") {
+    return htmlTheme;
+  }
+
+  if (document.documentElement.classList.contains("dark") || document.body.classList.contains("dark-theme")) {
+    return "dark";
+  }
+
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 class WhiteboardRefDockApp {
   private readonly iframeRoot: HTMLElement;
   private renderRoot: HTMLElement;
@@ -175,7 +198,8 @@ class WhiteboardRefDockApp {
   private error = "";
   private busy = false;
   private surfaceMode: SurfaceMode = "iframe";
-  private themeMode: ThemeMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  private logseqThemeMode: ThemeMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  private themeMode: ThemeMode = this.logseqThemeMode;
   private diagnosticsCollapsed = true;
   private resizeCleanup: (() => void) | null = null;
   private syncWriteTimer: number | null = null;
@@ -191,6 +215,7 @@ class WhiteboardRefDockApp {
   }
 
   async init(): Promise<void> {
+    this.logseqThemeMode = await getInitialThemeMode();
     await this.refreshGraphState();
     this.ensureSyncModeSettingInitialized();
     this.applySyncModeFromSettings();
@@ -202,6 +227,7 @@ class WhiteboardRefDockApp {
     const currentGraph = await logseq.App.getCurrentGraph();
     this.storageKey = getGraphStorageKey(currentGraph);
     this.graphState = loadGraphState(this.storageKey);
+    this.applyThemePreference();
     this.graphSyncStatus = this.getSyncMode() === "graph-backed" ? "synced" : "local-only";
     this.graphSyncError = "";
   }
@@ -368,8 +394,29 @@ class WhiteboardRefDockApp {
   }
 
   setThemeMode(mode: ThemeMode): void {
-    this.themeMode = mode;
+    this.logseqThemeMode = mode;
+    this.applyThemePreference();
     this.render();
+  }
+
+  private applyThemePreference(): void {
+    const preference = this.graphState.themePreference ?? "auto";
+    this.themeMode = preference === "auto" ? this.logseqThemeMode : preference;
+  }
+
+  private setThemePreference(preference: ThemePreference): void {
+    if (this.graphState.themePreference === preference) {
+      return;
+    }
+
+    this.graphState.themePreference = preference;
+    this.applyThemePreference();
+    this.persist();
+    this.render();
+  }
+
+  private getThemePreference(): ThemePreference {
+    return this.graphState.themePreference ?? "auto";
   }
 
   private persist(): void {
@@ -1644,6 +1691,15 @@ class WhiteboardRefDockApp {
       void this.refreshDock();
     });
 
+    root.querySelectorAll<HTMLElement>("[data-theme-preference]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const preference = button.dataset.themePreference as ThemePreference | undefined;
+        if (preference === "auto" || preference === "dark" || preference === "light") {
+          this.setThemePreference(preference);
+        }
+      });
+    });
+
     root.querySelector<HTMLElement>("[data-action='open-current-sync-page']")?.addEventListener("click", () => {
       void this.openCurrentSyncPage();
     });
@@ -1950,6 +2006,14 @@ class WhiteboardRefDockApp {
           align-items: center;
           gap: 8px;
           flex-shrink: 0;
+        }
+
+        .header-controls {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+          justify-content: flex-end;
         }
 
         .title-group {
@@ -2277,6 +2341,56 @@ class WhiteboardRefDockApp {
 
         #${APP_ROOT_ID}[data-theme="dark"] .mode-switch {
           background: rgba(148, 163, 184, 0.10);
+        }
+
+        .theme-switch {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 4px;
+          border-radius: 12px;
+          background: rgba(148, 163, 184, 0.12);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .theme-switch {
+          background: rgba(148, 163, 184, 0.10);
+        }
+
+        .theme-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 9px;
+          border-radius: 10px;
+          border: 1px solid transparent;
+          background: transparent;
+          color: inherit;
+          font-size: 11px;
+          font-weight: 600;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+        }
+
+        .theme-button:hover {
+          background: rgba(37, 99, 235, 0.08);
+        }
+
+        .theme-button.active {
+          border-color: var(--accent);
+          color: var(--accent);
+          background: rgba(37, 99, 235, 0.10);
+        }
+
+        .theme-button svg {
+          width: 14px;
+          height: 14px;
+          stroke: currentColor;
+          fill: none;
+          stroke-width: 1.75;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+          flex-shrink: 0;
         }
 
         .snapshot-pill {
@@ -2712,9 +2826,16 @@ class WhiteboardRefDockApp {
               <p class="eyebrow">Review dock</p>
               <p class="subtitle">${escapeHtml(routeLabel)}</p>
             </div>
-            <div class="header-actions">
-              <button class="ghost-button" data-action="refresh-dock">Refresh</button>
-              <button class="ghost-button" data-action="toggle-dock">${isDockActive ? "Hide" : "Show"}</button>
+            <div class="header-controls">
+              <div class="theme-switch" role="tablist" aria-label="RefDock theme">
+                ${renderThemePreferenceButton("auto", "Auto", this.getThemePreference())}
+                ${renderThemePreferenceButton("dark", "Dark", this.getThemePreference())}
+                ${renderThemePreferenceButton("light", "Light", this.getThemePreference())}
+              </div>
+              <div class="header-actions">
+                <button class="ghost-button" data-action="refresh-dock">Refresh</button>
+                <button class="ghost-button" data-action="toggle-dock">${isDockActive ? "Hide" : "Show"}</button>
+              </div>
             </div>
           </div>
           <div class="status-row">
@@ -2914,6 +3035,36 @@ function renderReferenceFilterButton(
       aria-selected="${filter === activeFilter ? "true" : "false"}"
     >
       ${escapeHtml(label)} <span class="count">${count}</span>
+    </button>
+  `;
+}
+
+function renderThemePreferenceButton(preference: ThemePreference, label: string, activePreference: ThemePreference): string {
+  const icon =
+    preference === "auto"
+      ? `<svg viewBox="0 0 16 16" aria-hidden="true">
+           <circle cx="8" cy="8" r="4.5"></circle>
+           <path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5"></path>
+         </svg>`
+      : preference === "dark"
+        ? `<svg viewBox="0 0 16 16" aria-hidden="true">
+             <path d="M10.9 1.9a5.9 5.9 0 1 0 3.2 10.9A6.3 6.3 0 0 1 10.9 1.9Z"></path>
+           </svg>`
+        : `<svg viewBox="0 0 16 16" aria-hidden="true">
+             <circle cx="8" cy="8" r="3.2"></circle>
+             <path d="M8 1.25v1.6M8 13.15v1.6M1.25 8h1.6M13.15 8h1.6M3.2 3.2l1.1 1.1M11.7 11.7l1.1 1.1M12.8 3.2l-1.1 1.1M4.3 11.7l-1.1 1.1"></path>
+           </svg>`;
+
+  return `
+    <button
+      class="theme-button ${preference === activePreference ? "active" : ""}"
+      data-theme-preference="${escapeAttribute(preference)}"
+      role="tab"
+      aria-selected="${preference === activePreference ? "true" : "false"}"
+      title="${escapeAttribute(label)}"
+    >
+      ${icon}
+      <span>${escapeHtml(label)}</span>
     </button>
   `;
 }
