@@ -1361,6 +1361,35 @@ class WhiteboardRefDockApp {
     return mergedSnapshot;
   }
 
+  private preserveSnapshotItemOrder(previousSnapshot: Snapshot | null, nextSnapshot: Snapshot): Snapshot {
+    if (!previousSnapshot?.items.length || !nextSnapshot.items.length) {
+      return nextSnapshot;
+    }
+
+    const previousOrderById = new Map(previousSnapshot.items.map((item, index) => [item.id, index] as const));
+    const existingItems: Array<{ previousOrder: number; item: SnapshotItem }> = [];
+    const newItems: SnapshotItem[] = [];
+
+    for (const item of nextSnapshot.items) {
+      const previousOrder = previousOrderById.get(item.id);
+      if (typeof previousOrder === "number") {
+        existingItems.push({ previousOrder, item });
+      } else {
+        newItems.push(item);
+      }
+    }
+
+    existingItems.sort((left, right) => left.previousOrder - right.previousOrder);
+
+    return {
+      ...nextSnapshot,
+      items: [...existingItems.map((entry) => entry.item), ...newItems].map((item, index) => ({
+        ...item,
+        order: index,
+      })),
+    };
+  }
+
   private clearSnapshot(): void {
     if (!this.currentWhiteboard) {
       return;
@@ -1395,12 +1424,12 @@ class WhiteboardRefDockApp {
   }
 
   private async refreshSavedSource(reviewKey: string): Promise<void> {
-    const snapshot = this.graphState.snapshotsByReviewKey[reviewKey];
+    const existingSnapshot = this.graphState.snapshotsByReviewKey[reviewKey];
     const sourceMeta = this.graphState.sourceMetaByReviewKey[reviewKey];
-    const sourceType = snapshot?.sourceType ?? sourceMeta?.sourceType;
-    const sourceValue = snapshot?.sourceValue ?? sourceMeta?.sourceValue;
-    const whiteboardId = snapshot?.whiteboardId ?? sourceMeta?.whiteboardId;
-    const whiteboardName = snapshot?.whiteboardName ?? sourceMeta?.whiteboardName;
+    const sourceType = existingSnapshot?.sourceType ?? sourceMeta?.sourceType;
+    const sourceValue = existingSnapshot?.sourceValue ?? sourceMeta?.sourceValue;
+    const whiteboardId = existingSnapshot?.whiteboardId ?? sourceMeta?.whiteboardId;
+    const whiteboardName = existingSnapshot?.whiteboardName ?? sourceMeta?.whiteboardName;
     if (!sourceType || !sourceValue || !whiteboardId || !whiteboardName) {
       return;
     }
@@ -1416,7 +1445,8 @@ class WhiteboardRefDockApp {
           ? this.currentWhiteboard
           : { id: whiteboardId, name: whiteboardName };
       const refreshedSnapshot = await this.buildSnapshotForSource(whiteboard, sourceType, sourceValue);
-      const mergedSnapshot = this.storeSnapshot(refreshedSnapshot, { resetScroll: false });
+      const orderedSnapshot = this.preserveSnapshotItemOrder(existingSnapshot ?? null, refreshedSnapshot);
+      const mergedSnapshot = this.storeSnapshot(orderedSnapshot, { resetScroll: false });
       this.message = `Refreshed ${mergedSnapshot.sourceValue}.`;
     } catch (error) {
       const message = getRenderableErrorMessage(error);
@@ -1750,6 +1780,9 @@ class WhiteboardRefDockApp {
     root.querySelector<HTMLInputElement>("[data-role='source-input']")?.addEventListener("input", (event) => {
       const target = event.currentTarget as HTMLInputElement;
       this.sourceValue = target.value;
+      this.error = "";
+      this.message = "";
+      this.render();
     });
 
     root.querySelectorAll<HTMLElement>("[data-source-type]").forEach((button) => {
