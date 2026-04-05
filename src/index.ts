@@ -43,6 +43,16 @@ const DEFAULT_TOGGLE_SHORTCUT_LABEL = IS_MAC_PLATFORM ? "Cmd+Option+R" : "Ctrl+A
 type SurfaceMode = "iframe" | "host";
 type ReferenceFilter = ReferenceState;
 type GraphSyncStatus = "local-only" | "pending" | "syncing" | "synced" | "error";
+
+interface LocatePreviewState {
+  whiteboard: WhiteboardInfo;
+  targetPageName: string;
+  targetBlockUuid: string | null;
+  allowedBlockUuids: string[];
+  targetLabel: string;
+  startedAt: number;
+}
+
 const SETTINGS_SCHEMA = [
   {
     key: "enableGraphSync",
@@ -114,6 +124,31 @@ function getEntityId(entity: unknown): number | null {
   }
 
   return null;
+}
+
+function getEntityPageName(entity: unknown): string | null {
+  if (!entity || typeof entity !== "object") {
+    return null;
+  }
+
+  const record = entity as Record<string, unknown>;
+  const candidates = [record.originalName, record.name, record.title, record["block/title"], record["block/name"]];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function logLocatePreview(event: string, details?: Record<string, unknown>): void {
+  if (details) {
+    console.info("[whiteboard-refdock][locate-preview]", event, details);
+    return;
+  }
+
+  console.info("[whiteboard-refdock][locate-preview]", event);
 }
 
 function normalizeShortcutForLogseq(value: string): string {
@@ -208,7 +243,9 @@ class WhiteboardRefDockApp {
   private lastGraphSyncAt: number | null = null;
   private graphSyncError = "";
   private contextRefreshToken = 0;
-  private preserveDockOnNextNonWhiteboardRoute = false;
+  private locatePreviewState: LocatePreviewState | null = null;
+  private locatePreviewMonitor: number | null = null;
+  private locatePreviewClickCleanup: (() => void) | null = null;
 
   constructor(root: HTMLElement) {
     this.iframeRoot = root;
@@ -280,10 +317,29 @@ class WhiteboardRefDockApp {
     const refreshToken = ++this.contextRefreshToken;
     const routeWhiteboardName = this.getRouteWhiteboardName();
 
+    if (routeWhiteboardName && this.locatePreviewState) {
+      this.clearLocatePreviewState("refreshContext:entered-whiteboard-route");
+    }
+
     if (routeWhiteboardName && (!this.currentWhiteboard || !this.isSameWhiteboardName(this.currentWhiteboard.name, routeWhiteboardName))) {
       this.currentWhiteboard = null;
       await this.syncDockSurface();
       this.render();
+    }
+
+    if (!routeWhiteboardName && this.locatePreviewState) {
+      const previewStillValid = await this.isLocatePreviewStillValid(this.locatePreviewState);
+      if (refreshToken !== this.contextRefreshToken) {
+        return;
+      }
+
+      if (previewStillValid) {
+        this.currentWhiteboard = this.locatePreviewState.whiteboard;
+        await this.applyResolvedWhiteboardContext(refreshToken);
+        return;
+      }
+
+      this.clearLocatePreviewState("refreshContext:preview-invalid-after-route-change");
     }
 
     const nextWhiteboard = await this.resolveCurrentWhiteboard(routeWhiteboardName);
@@ -291,26 +347,18 @@ class WhiteboardRefDockApp {
       return;
     }
 
-    if (
-      !routeWhiteboardName &&
-      !nextWhiteboard &&
-      this.preserveDockOnNextNonWhiteboardRoute &&
-      this.currentWhiteboard &&
-      this.graphState.dockVisible
-    ) {
-      this.preserveDockOnNextNonWhiteboardRoute = false;
-      await this.syncDockSurface();
-      if (refreshToken !== this.contextRefreshToken) {
-        return;
-      }
-
-      this.render();
-      return;
-    }
-
-    this.preserveDockOnNextNonWhiteboardRoute = false;
-
     this.currentWhiteboard = nextWhiteboard;
+    await this.applyResolvedWhiteboardContext(refreshToken);
+  }
+
+  async toggleDock(): Promise<void> {
+    this.graphState.dockVisible = !this.graphState.dockVisible;
+    this.persist();
+    await this.syncDockSurface();
+    this.render();
+  }
+
+  private async applyResolvedWhiteboardContext(refreshToken: number): Promise<void> {
     await this.hydrateCurrentWhiteboardFromGraphSync();
     if (refreshToken !== this.contextRefreshToken) {
       return;
@@ -328,13 +376,6 @@ class WhiteboardRefDockApp {
 
     this.render();
     await this.ensureActiveSnapshotLoaded();
-  }
-
-  async toggleDock(): Promise<void> {
-    this.graphState.dockVisible = !this.graphState.dockVisible;
-    this.persist();
-    await this.syncDockSurface();
-    this.render();
   }
 
   async revealDock(): Promise<void> {
@@ -1183,13 +1224,13 @@ class WhiteboardRefDockApp {
     }
   }
 
-  private getRouteWhiteboardName(): string | null {
+  private getDecodedRouteName(prefix: string): string | null {
     const path = this.getCurrentRoutePath();
-    if (!path || !path.startsWith("/whiteboard/")) {
+    if (!path || !path.startsWith(prefix)) {
       return null;
     }
 
-    const encodedName = path.slice("/whiteboard/".length).split("?")[0];
+    const encodedName = path.slice(prefix.length).split("?")[0];
     if (!encodedName) {
       return null;
     }
@@ -1199,6 +1240,14 @@ class WhiteboardRefDockApp {
     } catch (_error) {
       return encodedName;
     }
+  }
+
+  private getRouteWhiteboardName(): string | null {
+    return this.getDecodedRouteName("/whiteboard/");
+  }
+
+  private getRoutePageName(): string | null {
+    return this.getDecodedRouteName("/page/");
   }
 
   private isSameWhiteboardName(left: string | null | undefined, right: string | null | undefined): boolean {
@@ -1228,6 +1277,402 @@ class WhiteboardRefDockApp {
     }
 
     return null;
+  }
+
+  private clearLocatePreviewState(reason?: string): void {
+    if (this.locatePreviewState) {
+      logLocatePreview("clear", {
+        reason: reason ?? "unspecified",
+        whiteboard: this.locatePreviewState.whiteboard.name,
+        targetPageName: this.locatePreviewState.targetPageName,
+        targetBlockUuid: this.locatePreviewState.targetBlockUuid,
+      });
+    }
+
+    this.locatePreviewState = null;
+    if (this.locatePreviewMonitor !== null) {
+      window.clearInterval(this.locatePreviewMonitor);
+      this.locatePreviewMonitor = null;
+    }
+
+    if (this.locatePreviewClickCleanup) {
+      this.locatePreviewClickCleanup();
+      this.locatePreviewClickCleanup = null;
+    }
+  }
+
+  private ensureLocatePreviewMonitor(): void {
+    if (this.locatePreviewMonitor !== null) {
+      return;
+    }
+
+    this.locatePreviewMonitor = window.setInterval(() => {
+      void this.monitorLocatePreview();
+    }, 700);
+  }
+
+  private ensureLocatePreviewClickListener(): void {
+    if (this.locatePreviewClickCleanup) {
+      return;
+    }
+
+    const hostDocument = this.getHostDocument();
+    if (!hostDocument) {
+      return;
+    }
+
+    const handler = (event: Event) => {
+      void this.handleLocatePreviewDocumentClick(event);
+    };
+
+    hostDocument.addEventListener("click", handler, true);
+    this.locatePreviewClickCleanup = () => {
+      hostDocument.removeEventListener("click", handler, true);
+    };
+  }
+
+  private async monitorLocatePreview(): Promise<void> {
+    const previewState = this.locatePreviewState;
+    if (!previewState) {
+      this.clearLocatePreviewState("monitor:missing-preview-state");
+      return;
+    }
+
+    if (this.getRouteWhiteboardName()) {
+      logLocatePreview("monitor:whiteboard-route");
+      this.clearLocatePreviewState("monitor:entered-whiteboard-route");
+      return;
+    }
+
+    const stillValid = await this.isLocatePreviewStillValid(previewState);
+    if (previewState !== this.locatePreviewState) {
+      return;
+    }
+
+    if (!stillValid) {
+      logLocatePreview("monitor:invalid-page-context");
+      this.clearLocatePreviewState("monitor:invalid-page-context");
+      await this.refreshContext();
+    }
+  }
+
+  private async getCurrentPreviewPageName(): Promise<string | null> {
+    const routePageName = this.getRoutePageName();
+    if (routePageName) {
+      return routePageName;
+    }
+
+    try {
+      const currentPage = await logseq.Editor.getCurrentPage();
+      return getEntityPageName(currentPage);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  private async handleLocatePreviewDocumentClick(event: Event): Promise<void> {
+    const previewState = this.locatePreviewState;
+    if (!previewState || this.getRouteWhiteboardName()) {
+      return;
+    }
+
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) {
+      return;
+    }
+
+    if (target.closest(`#${HOST_CONTAINER_ID}`) || target.closest(`#${APP_ROOT_ID}`)) {
+      return;
+    }
+
+    if (!previewState.targetBlockUuid) {
+      return;
+    }
+
+    const blockElement = target.closest(".ls-block[blockid]") as HTMLElement | null;
+    if (!blockElement) {
+      return;
+    }
+
+    const clickedBlockUuid = blockElement.getAttribute("blockid");
+    if (!clickedBlockUuid) {
+      return;
+    }
+
+    logLocatePreview("click", {
+      clickedBlockUuid,
+      targetBlockUuid: previewState.targetBlockUuid,
+      allowedBlockUuids: previewState.allowedBlockUuids,
+    });
+
+    if (Date.now() - previewState.startedAt < 1200) {
+      logLocatePreview("click:ignored-during-warmup", { clickedBlockUuid });
+      return;
+    }
+
+    window.setTimeout(() => {
+      void this.reconcileLocatePreviewAfterBlockClick(previewState, clickedBlockUuid);
+    }, 120);
+  }
+
+  private getBlockDomElementByUuid(blockUuid: string): HTMLElement | null {
+    const hostDocument = this.getHostDocument();
+    if (!hostDocument) {
+      return null;
+    }
+
+    const root = hostDocument.querySelector("#main-content-container") ?? hostDocument.body;
+    const selector = `.ls-block[blockid="${blockUuid.replaceAll('"', '\\"')}"]`;
+
+    try {
+      const escapedSelector = `.ls-block[blockid="${CSS.escape(blockUuid)}"]`;
+      const matches = Array.from(root.querySelectorAll<HTMLElement>(escapedSelector));
+      return matches.find((element) => element.getClientRects().length > 0) ?? matches[0] ?? null;
+    } catch (_error) {
+      const matches = Array.from(root.querySelectorAll<HTMLElement>(selector));
+      return matches.find((element) => element.getClientRects().length > 0) ?? matches[0] ?? null;
+    }
+  }
+
+  private async reconcileLocatePreviewAfterBlockClick(previewState: LocatePreviewState, clickedBlockUuid: string): Promise<void> {
+    if (this.locatePreviewState !== previewState) {
+      return;
+    }
+
+    if (previewState.allowedBlockUuids.includes(clickedBlockUuid)) {
+      logLocatePreview("reconcile:clicked-allowed", { clickedBlockUuid });
+      return;
+    }
+
+    const targetBlockElement = previewState.targetBlockUuid ? this.getBlockDomElementByUuid(previewState.targetBlockUuid) : null;
+    const clickedBlockElement = this.getBlockDomElementByUuid(clickedBlockUuid);
+    logLocatePreview("reconcile:dom-lookup", {
+      clickedBlockUuid,
+      targetBlockUuid: previewState.targetBlockUuid,
+      targetFound: Boolean(targetBlockElement),
+      clickedFound: Boolean(clickedBlockElement),
+      domEqual: Boolean(targetBlockElement && clickedBlockElement && clickedBlockElement === targetBlockElement),
+      clickedContainsTarget: Boolean(targetBlockElement && clickedBlockElement && clickedBlockElement.contains(targetBlockElement)),
+      targetContainsClicked: Boolean(targetBlockElement && clickedBlockElement && targetBlockElement.contains(clickedBlockElement)),
+    });
+    if (targetBlockElement && clickedBlockElement) {
+      if (clickedBlockElement === targetBlockElement || clickedBlockElement.contains(targetBlockElement)) {
+        logLocatePreview("reconcile:keep-dom-ancestor-or-self", { clickedBlockUuid });
+        return;
+      }
+
+      if (targetBlockElement.contains(clickedBlockElement)) {
+        logLocatePreview("reconcile:collapse-dom-child", { clickedBlockUuid });
+        this.clearLocatePreviewState("reconcile:clicked-child-block");
+        await this.refreshContext();
+        return;
+      }
+    }
+
+    try {
+      const currentBlock = await logseq.Editor.getCurrentBlock();
+      if (this.locatePreviewState !== previewState) {
+        return;
+      }
+
+      if (currentBlock?.uuid && previewState.allowedBlockUuids.includes(currentBlock.uuid)) {
+        logLocatePreview("reconcile:keep-current-block-allowed", {
+          clickedBlockUuid,
+          currentBlockUuid: currentBlock.uuid,
+        });
+        return;
+      }
+      logLocatePreview("reconcile:current-block-not-allowed", {
+        clickedBlockUuid,
+        currentBlockUuid: currentBlock?.uuid ?? null,
+      });
+    } catch (_error) {
+      // Fall through to clicked DOM block UUID and DOM relation heuristics.
+      logLocatePreview("reconcile:current-block-read-failed", { clickedBlockUuid });
+    }
+
+    logLocatePreview("reconcile:collapse-fallback", { clickedBlockUuid });
+    this.clearLocatePreviewState("reconcile:collapse-fallback");
+    await this.refreshContext();
+  }
+
+  private async collectAllowedLocateBlockUuids(blockUuid: string): Promise<string[]> {
+    const allowed = [blockUuid];
+    const visited = new Set<string>(allowed);
+    let currentBlock = await logseq.Editor.getBlock(blockUuid);
+
+    for (let depth = 0; depth < 64 && currentBlock?.parent?.id; depth += 1) {
+      const parentBlock = await logseq.Editor.getBlock(currentBlock.parent.id);
+      if (!parentBlock?.uuid || visited.has(parentBlock.uuid)) {
+        break;
+      }
+
+      visited.add(parentBlock.uuid);
+      allowed.push(parentBlock.uuid);
+      currentBlock = parentBlock;
+    }
+
+    return allowed;
+  }
+
+  private createLocatePreviewState(item: SnapshotItem): LocatePreviewState | null {
+    if (!this.currentWhiteboard || !item.pageName) {
+      return null;
+    }
+
+    return {
+      whiteboard: this.currentWhiteboard,
+      targetPageName: item.pageName,
+      targetBlockUuid: item.type === "block" && item.blockUuid ? item.blockUuid : null,
+      allowedBlockUuids: item.type === "block" && item.blockUuid ? [item.blockUuid] : [],
+      targetLabel: item.type === "block" ? item.label : item.pageName,
+      startedAt: Date.now(),
+    };
+  }
+
+  private startLocatePreview(item: SnapshotItem): void {
+    const previewState = this.createLocatePreviewState(item);
+    if (!previewState) {
+      this.clearLocatePreviewState("start:missing-whiteboard-or-page");
+      return;
+    }
+
+    this.locatePreviewState = previewState;
+    this.ensureLocatePreviewMonitor();
+    this.ensureLocatePreviewClickListener();
+    logLocatePreview("start", {
+      whiteboard: previewState.whiteboard.name,
+      targetPageName: previewState.targetPageName,
+      targetBlockUuid: previewState.targetBlockUuid,
+      targetLabel: previewState.targetLabel,
+    });
+    this.render();
+
+    if (previewState.targetBlockUuid) {
+      const targetBlockUuid = previewState.targetBlockUuid;
+      void (async () => {
+        try {
+          const allowedBlockUuids = await this.collectAllowedLocateBlockUuids(targetBlockUuid);
+          if (this.locatePreviewState === previewState) {
+            this.locatePreviewState = {
+              ...previewState,
+              allowedBlockUuids,
+            };
+            logLocatePreview("start:resolved-ancestors", {
+              targetBlockUuid,
+              allowedBlockUuids,
+            });
+          }
+        } catch (_error) {
+          // Keep the initial block-only preview state if ancestor inspection fails.
+          logLocatePreview("start:resolve-ancestors-failed", { targetBlockUuid });
+        }
+      })();
+    }
+  }
+
+  private isLocatePreviewWarmupActive(previewState: LocatePreviewState, durationMs = 1800): boolean {
+    return Date.now() - previewState.startedAt < durationMs;
+  }
+
+  private isLocatePreviewContextMatch(previewState: LocatePreviewState, currentName: string | null | undefined): boolean {
+    if (!currentName) {
+      return false;
+    }
+
+    if (this.isSameWhiteboardName(currentName, previewState.targetPageName)) {
+      return true;
+    }
+
+    return previewState.allowedBlockUuids.includes(currentName);
+  }
+
+  private async isLocatePreviewStillValid(previewState: LocatePreviewState): Promise<boolean> {
+    const attempts = this.isLocatePreviewWarmupActive(previewState) ? 6 : 1;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const routePath = this.getCurrentRoutePath();
+      const routeWhiteboardName = this.getRouteWhiteboardName();
+      if (routeWhiteboardName) {
+        logLocatePreview("validate:whiteboard-route", {
+          attempt,
+          routePath,
+          routeWhiteboardName,
+          targetPageName: previewState.targetPageName,
+        });
+        return false;
+      }
+
+      const routePageName = this.getRoutePageName();
+      if (routePageName) {
+        const valid = this.isLocatePreviewContextMatch(previewState, routePageName);
+        logLocatePreview("validate:route-page", {
+          attempt,
+          routePath,
+          routePageName,
+          targetPageName: previewState.targetPageName,
+          valid,
+        });
+        return valid;
+      }
+
+      const currentPageName = await this.getCurrentPreviewPageName();
+      if (currentPageName) {
+        const valid = this.isLocatePreviewContextMatch(previewState, currentPageName);
+        logLocatePreview("validate:current-page", {
+          attempt,
+          routePath,
+          currentPageName,
+          targetPageName: previewState.targetPageName,
+          valid,
+        });
+        return valid;
+      }
+
+      if (!this.isLocatePreviewWarmupActive(previewState) || attempt >= attempts - 1) {
+        logLocatePreview("validate:no-page-context", {
+          attempt,
+          routePath,
+          targetPageName: previewState.targetPageName,
+          warmupActive: this.isLocatePreviewWarmupActive(previewState),
+        });
+        return false;
+      }
+
+      logLocatePreview("validate:retry", {
+        attempt,
+        routePath,
+        targetPageName: previewState.targetPageName,
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+
+    return false;
+  }
+
+  private navigateToWhiteboard(name: string): void {
+    const targetHash = `#/whiteboard/${encodeURIComponent(name)}`;
+
+    try {
+      const location = window.top?.location ?? window.location;
+      if (location.hash === targetHash) {
+        return;
+      }
+
+      location.hash = targetHash;
+    } catch (_error) {
+      window.location.hash = targetHash;
+    }
+  }
+
+  private returnToLocateWhiteboard(): void {
+    const previewState = this.locatePreviewState;
+    if (!previewState) {
+      return;
+    }
+
+    this.clearLocatePreviewState("return-to-whiteboard");
+    this.navigateToWhiteboard(previewState.whiteboard.name);
   }
 
   private ensureHostRoot(): HTMLElement | null {
@@ -1548,6 +1993,7 @@ class WhiteboardRefDockApp {
     }
 
     if (options?.inSidebar) {
+      this.clearLocatePreviewState("open-item:sidebar");
       if (this.graphState.dockVisible) {
         this.graphState.dockVisible = false;
         this.persist();
@@ -1571,7 +2017,7 @@ class WhiteboardRefDockApp {
       return;
     }
 
-    this.preserveDockOnNextNonWhiteboardRoute = true;
+    this.startLocatePreview(item);
 
     if (item.type === "block" && item.blockUuid) {
       await logseq.Editor.scrollToBlockInPage(item.pageName, item.blockUuid);
@@ -1740,6 +2186,10 @@ class WhiteboardRefDockApp {
 
     root.querySelector<HTMLElement>("[data-action='refresh-dock']")?.addEventListener("click", () => {
       void this.refreshDock();
+    });
+
+    root.querySelector<HTMLElement>("[data-action='back-to-whiteboard']")?.addEventListener("click", () => {
+      this.returnToLocateWhiteboard();
     });
 
     root.querySelectorAll<HTMLElement>("[data-theme-preference]").forEach((button) => {
@@ -1949,6 +2399,8 @@ class WhiteboardRefDockApp {
     const createSnapshotLabel =
       this.busy ? "Saving..." : draftReviewKey && this.graphState.sourceMetaByReviewKey[draftReviewKey] ? "Refresh Snapshot" : "Create Snapshot";
     const routeLabel = this.currentWhiteboard?.name ?? "No whiteboard";
+    const locatePreviewState = this.locatePreviewState;
+    const locatePreviewActive = Boolean(locatePreviewState && !this.getRouteWhiteboardName());
     const isDockActive = Boolean(this.currentWhiteboard && this.graphState.dockVisible);
     const surfaceHint =
       this.surfaceMode === "host"
@@ -2090,6 +2542,13 @@ class WhiteboardRefDockApp {
           gap: 3px;
         }
 
+        .subtitle-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+
         .eyebrow {
           margin: 0;
           font-size: 9px;
@@ -2110,7 +2569,32 @@ class WhiteboardRefDockApp {
           text-overflow: ellipsis;
         }
 
+        .header-note {
+          margin: 0;
+          font-size: 11px;
+          line-height: 1.35;
+          color: var(--muted-light);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .preview-chip {
+          display: inline-flex;
+          align-items: center;
+          border-radius: 999px;
+          padding: 2px 8px;
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+          background: rgba(59, 130, 246, 0.16);
+          color: var(--accent);
+          white-space: nowrap;
+          flex-shrink: 0;
+        }
+
         #${APP_ROOT_ID}[data-theme="dark"] .subtitle,
+        #${APP_ROOT_ID}[data-theme="dark"] .header-note,
         #${APP_ROOT_ID}[data-theme="dark"] .hint,
         #${APP_ROOT_ID}[data-theme="dark"] .message,
         #${APP_ROOT_ID}[data-theme="dark"] .count {
@@ -2905,7 +3389,15 @@ class WhiteboardRefDockApp {
           <div class="header-row">
             <div class="title-group">
               <p class="eyebrow">Review dock</p>
-              <p class="subtitle">${escapeHtml(routeLabel)}</p>
+              <div class="subtitle-row">
+                <p class="subtitle">${escapeHtml(routeLabel)}</p>
+                ${locatePreviewActive ? `<span class="preview-chip">Locate preview</span>` : ""}
+              </div>
+              ${
+                locatePreviewActive && locatePreviewState
+                  ? `<p class="header-note">Viewing ${escapeHtml(locatePreviewState.targetLabel)} outside the whiteboard. Use Back to Whiteboard to return.</p>`
+                  : ""
+              }
             </div>
             <div class="header-controls">
               <div class="theme-switch" role="tablist" aria-label="RefDock theme">
@@ -2914,6 +3406,7 @@ class WhiteboardRefDockApp {
                 ${renderThemePreferenceButton("light", "Light", this.getThemePreference())}
               </div>
               <div class="header-actions">
+                ${locatePreviewActive ? `<button class="ghost-button" data-action="back-to-whiteboard">Back to Whiteboard</button>` : ""}
                 <button class="ghost-button" data-action="refresh-dock">Refresh</button>
                 <button class="ghost-button" data-action="toggle-dock">${isDockActive ? "Hide" : "Show"}</button>
               </div>
@@ -3059,7 +3552,7 @@ class WhiteboardRefDockApp {
                             </div>
                           </div>
                           <div class="item-actions">
-                            <button class="ghost-button" data-item-open="${escapeAttribute(item.id)}">${item.type === "block" ? "Locate" : "Open"}</button>
+                            <button class="ghost-button" data-item-open="${escapeAttribute(item.id)}">Locate</button>
                             <button class="status-button ${item.status === "seen" ? "active" : ""}" data-item-id="${escapeAttribute(item.id)}" data-item-status="seen">Seen</button>
                             <button class="status-button ${item.status === "unseen" ? "active" : ""}" data-item-id="${escapeAttribute(item.id)}" data-item-status="unseen">Unseen</button>
                             <button class="status-button ${item.status === "pending" ? "active" : ""}" data-item-id="${escapeAttribute(item.id)}" data-item-status="pending">Pending</button>

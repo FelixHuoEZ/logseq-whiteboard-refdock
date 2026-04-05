@@ -25,6 +25,7 @@ It is especially useful when you want to write an article by first using a white
 - Toggle the dock from the Logseq toolbar.
 - Toggle the dock with a keyboard shortcut.
 - Use `Shift+Click` on `Locate` to open the target in Logseq's right sidebar.
+- Keep the originating whiteboard context visible during a temporary `Locate preview`, then jump back with `Back to Whiteboard`.
 
 ## Best For
 
@@ -45,6 +46,7 @@ It is especially useful when you want to write an article by first using a white
 7. Drag useful items into the whiteboard.
 8. Mark items as `seen`, `unseen`, `pending`, or `skipped`.
 9. Use `Shift+Click` on `Locate` when you want to open the target in the right sidebar instead of the main content area.
+10. Use `Back to Whiteboard` after a normal `Locate` when you want to return to the originating canvas immediately.
 
 ## Review Status Behavior
 
@@ -54,6 +56,14 @@ It is especially useful when you want to write an article by first using a white
 - `Skipped` is for items you have decided not to add into the whiteboard.
 - `Locate` does not automatically change an item's status.
 - `Shift+Click` on `Locate` opens the target in Logseq's right sidebar and hides RefDock first.
+
+## FAQ
+
+### Why does a whiteboard block card only show the first line?
+
+This is controlled by a Logseq setting, not by RefDock itself.
+
+Enable Logseq's `Display all lines of block references` option, or set `:ui/show-full-blocks? true` in `logseq/config.edn`, if you want whiteboard block cards to show the full multi-line block content.
 
 Default shortcut:
 
