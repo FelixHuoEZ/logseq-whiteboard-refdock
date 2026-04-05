@@ -21,6 +21,7 @@ import type {
   SavedSourceMeta,
   Snapshot,
   SnapshotItem,
+  SnapshotItemType,
   SnapshotSourceType,
   StatusFilter,
   SourceTombstone,
@@ -42,6 +43,7 @@ const DEFAULT_TOGGLE_SHORTCUT_BINDING = "mod+alt+r";
 const DEFAULT_TOGGLE_SHORTCUT_LABEL = IS_MAC_PLATFORM ? "Cmd+Option+R" : "Ctrl+Alt+R";
 type SurfaceMode = "iframe" | "host";
 type ReferenceFilter = ReferenceState;
+type SnapshotTypeFilter = "all" | SnapshotItemType;
 type GraphSyncStatus = "local-only" | "pending" | "syncing" | "synced" | "error";
 
 interface LocatePreviewState {
@@ -53,7 +55,8 @@ interface LocatePreviewState {
   startedAt: number;
 }
 
-interface PreservedSourceInputState {
+interface PreservedInputState {
+  role: string;
   value: string;
   selectionStart: number | null;
   selectionEnd: number | null;
@@ -235,6 +238,10 @@ class WhiteboardRefDockApp {
   private sourceType: SnapshotSourceType = "page";
   private sourceValue = "";
   private sourceInputComposing = false;
+  private snapshotSearchValue = "";
+  private snapshotTypeFilter: SnapshotTypeFilter = "all";
+  private snapshotFilterScopeReviewKey: string | null = null;
+  private snapshotFilterInputComposing = false;
   private referenceFilter: ReferenceFilter = "linked";
   private statusFilter: StatusFilter = "all";
   private message = "";
@@ -1033,15 +1040,7 @@ class WhiteboardRefDockApp {
     }
 
     return snapshot.items.filter((item) => {
-      if (item.referenceState !== this.referenceFilter) {
-        return false;
-      }
-
-      if (this.statusFilter === "all") {
-        return true;
-      }
-
-      return item.status === this.statusFilter;
+      return this.matchesVisibleItemFilters(item);
     });
   }
 
@@ -1059,7 +1058,7 @@ class WhiteboardRefDockApp {
     }
 
     for (const item of snapshot.items) {
-      if (item.referenceState !== this.referenceFilter) {
+      if (!this.matchesReferenceAndTemporaryFilters(item)) {
         continue;
       }
 
@@ -1081,10 +1080,106 @@ class WhiteboardRefDockApp {
     }
 
     for (const item of snapshot.items) {
+      if (!this.matchesTemporarySnapshotFilter(item)) {
+        continue;
+      }
+
       counts[item.referenceState] += 1;
     }
 
     return counts;
+  }
+
+  private getSnapshotTypeCounts(snapshot: Snapshot | null): Record<SnapshotTypeFilter, number> {
+    const counts: Record<SnapshotTypeFilter, number> = {
+      all: 0,
+      block: 0,
+      page: 0,
+    };
+
+    if (!snapshot) {
+      return counts;
+    }
+
+    for (const item of snapshot.items) {
+      if (!this.matchesReferenceAndStatusAndSearchFilters(item)) {
+        continue;
+      }
+
+      counts.all += 1;
+      counts[item.type] += 1;
+    }
+
+    return counts;
+  }
+
+  private syncSnapshotViewFilterScope(activeReviewKey: string | null): void {
+    if (this.snapshotFilterScopeReviewKey === activeReviewKey) {
+      return;
+    }
+
+    this.snapshotFilterScopeReviewKey = activeReviewKey;
+    this.snapshotSearchValue = "";
+    this.snapshotTypeFilter = "all";
+    this.snapshotFilterInputComposing = false;
+  }
+
+  private clearSnapshotViewFilters(): void {
+    this.snapshotSearchValue = "";
+    this.snapshotTypeFilter = "all";
+    this.snapshotFilterInputComposing = false;
+  }
+
+  private matchesVisibleItemFilters(item: SnapshotItem): boolean {
+    if (!this.matchesReferenceAndTemporaryFilters(item)) {
+      return false;
+    }
+
+    if (this.statusFilter === "all") {
+      return true;
+    }
+
+    return item.status === this.statusFilter;
+  }
+
+  private matchesReferenceAndTemporaryFilters(item: SnapshotItem): boolean {
+    if (item.referenceState !== this.referenceFilter) {
+      return false;
+    }
+
+    return this.matchesTemporarySnapshotFilter(item);
+  }
+
+  private matchesReferenceAndStatusAndSearchFilters(item: SnapshotItem): boolean {
+    if (item.referenceState !== this.referenceFilter) {
+      return false;
+    }
+
+    if (this.statusFilter !== "all" && item.status !== this.statusFilter) {
+      return false;
+    }
+
+    return this.matchesTemporarySnapshotFilter(item, { ignoreType: true });
+  }
+
+  private matchesTemporarySnapshotFilter(
+    item: SnapshotItem,
+    options?: { ignoreType?: boolean },
+  ): boolean {
+    if (!options?.ignoreType && this.snapshotTypeFilter !== "all" && item.type !== this.snapshotTypeFilter) {
+      return false;
+    }
+
+    const keyword = this.snapshotSearchValue.trim().toLocaleLowerCase();
+    if (!keyword) {
+      return true;
+    }
+
+    const haystacks = [item.label, item.matchedTitle, item.pageTitle, item.pageName]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.toLocaleLowerCase());
+
+    return haystacks.some((value) => value.includes(keyword));
   }
 
   private buildSyncSourceSummary(
@@ -2251,6 +2346,27 @@ class WhiteboardRefDockApp {
       });
     });
 
+    root.querySelectorAll<HTMLElement>("[data-snapshot-type-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextFilter = button.dataset.snapshotTypeFilter as SnapshotTypeFilter | undefined;
+        if (!nextFilter || nextFilter === this.snapshotTypeFilter) {
+          return;
+        }
+
+        this.snapshotTypeFilter = nextFilter;
+        this.render();
+      });
+    });
+
+    root.querySelector<HTMLElement>("[data-action='clear-snapshot-view-filters']")?.addEventListener("click", () => {
+      if (!this.snapshotSearchValue && this.snapshotTypeFilter === "all") {
+        return;
+      }
+
+      this.clearSnapshotViewFilters();
+      this.render();
+    });
+
     root.querySelector<HTMLInputElement>("[data-role='source-input']")?.addEventListener("compositionstart", () => {
       this.sourceInputComposing = true;
     });
@@ -2261,6 +2377,27 @@ class WhiteboardRefDockApp {
       this.sourceValue = target.value;
       this.error = "";
       this.message = "";
+      this.render();
+    });
+
+    root.querySelector<HTMLInputElement>("[data-role='snapshot-filter-input']")?.addEventListener("compositionstart", () => {
+      this.snapshotFilterInputComposing = true;
+    });
+
+    root.querySelector<HTMLInputElement>("[data-role='snapshot-filter-input']")?.addEventListener("compositionend", (event) => {
+      const target = event.currentTarget as HTMLInputElement;
+      this.snapshotFilterInputComposing = false;
+      this.snapshotSearchValue = target.value;
+      this.render();
+    });
+
+    root.querySelector<HTMLInputElement>("[data-role='snapshot-filter-input']")?.addEventListener("input", (event) => {
+      const target = event.currentTarget as HTMLInputElement;
+      this.snapshotSearchValue = target.value;
+      if (this.snapshotFilterInputComposing || (event as InputEvent).isComposing) {
+        return;
+      }
+
       this.render();
     });
 
@@ -2376,6 +2513,18 @@ class WhiteboardRefDockApp {
         void this.createSnapshot();
       }
     });
+
+    root.querySelector<HTMLElement>("[data-role='snapshot-filter-input']")?.addEventListener("keydown", (event) => {
+      if ((event as KeyboardEvent).isComposing || this.snapshotFilterInputComposing) {
+        return;
+      }
+
+      if (event.key === "Escape" && (this.snapshotSearchValue || this.snapshotTypeFilter !== "all")) {
+        event.preventDefault();
+        this.clearSnapshotViewFilters();
+        this.render();
+      }
+    });
   }
 
   private renderEmptyState(snapshot: Snapshot | null): string {
@@ -2412,26 +2561,32 @@ class WhiteboardRefDockApp {
     `;
   }
 
-  private captureSourceInputState(root: HTMLElement): PreservedSourceInputState | null {
-    const input = root.querySelector<HTMLInputElement>("[data-role='source-input']");
-    if (!input || input.ownerDocument?.activeElement !== input) {
+  private captureFocusedInputState(root: HTMLElement): PreservedInputState | null {
+    const activeElement = root.ownerDocument?.activeElement;
+    if (!(activeElement instanceof HTMLInputElement)) {
+      return null;
+    }
+
+    const role = activeElement.dataset.role;
+    if (role !== "source-input" && role !== "snapshot-filter-input") {
       return null;
     }
 
     return {
-      value: input.value,
-      selectionStart: input.selectionStart,
-      selectionEnd: input.selectionEnd,
-      selectionDirection: input.selectionDirection,
+      role,
+      value: activeElement.value,
+      selectionStart: activeElement.selectionStart,
+      selectionEnd: activeElement.selectionEnd,
+      selectionDirection: activeElement.selectionDirection,
     };
   }
 
-  private restoreSourceInputState(root: HTMLElement, state: PreservedSourceInputState | null): void {
+  private restoreFocusedInputState(root: HTMLElement, state: PreservedInputState | null): void {
     if (!state) {
       return;
     }
 
-    const input = root.querySelector<HTMLInputElement>("[data-role='source-input']");
+    const input = root.querySelector<HTMLInputElement>(`[data-role='${state.role}']`);
     if (!input) {
       return;
     }
@@ -2451,13 +2606,17 @@ class WhiteboardRefDockApp {
   }
 
   render(): void {
-    const snapshot = this.getActiveSnapshot();
     const activeReviewKey = this.getActiveReviewKey();
+    this.syncSnapshotViewFilterScope(activeReviewKey);
+    const snapshot = this.getActiveSnapshot();
     const savedSourceEntries = this.getSavedSourceEntries();
     const visibleItems = this.getVisibleItems();
     const counts = this.getCounts(snapshot);
     const referenceCounts = this.getReferenceCounts(snapshot);
+    const snapshotTypeCounts = this.getSnapshotTypeCounts(snapshot);
     const sourcePlaceholder = this.sourceType === "page" ? "Page name" : "Keyword";
+    const snapshotFilterPlaceholder = "Filter current snapshot";
+    const snapshotViewFilterActive = Boolean(this.snapshotSearchValue.trim() || this.snapshotTypeFilter !== "all");
     const trimmedSourceValue = this.sourceValue.trim();
     const draftReviewKey =
       this.currentWhiteboard && trimmedSourceValue
@@ -2474,7 +2633,7 @@ class WhiteboardRefDockApp {
         ? "Host dock active. Drag cards directly into the whiteboard."
         : "Iframe dock fallback. Drag support depends on the current Logseq runtime.";
     const root = this.renderRoot;
-    const preservedSourceInputState = this.captureSourceInputState(root);
+    const preservedInputState = this.captureFocusedInputState(root);
     if (this.iframeRoot !== root) {
       this.iframeRoot.innerHTML = "";
     }
@@ -2945,6 +3104,58 @@ class WhiteboardRefDockApp {
         .controls-grid {
           display: grid;
           gap: 8px;
+        }
+
+        .snapshot-view-filters {
+          display: grid;
+          gap: 8px;
+          padding: 10px 12px;
+          border: 1px solid var(--panel-border-light);
+          border-radius: 12px;
+          background: rgba(148, 163, 184, 0.06);
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .snapshot-view-filters {
+          border-color: var(--panel-border-dark);
+          background: rgba(15, 23, 42, 0.42);
+        }
+
+        .snapshot-view-filter-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .snapshot-filter-input {
+          min-width: 0;
+          flex: 1 1 180px;
+          padding: 8px 10px;
+        }
+
+        .snapshot-type-switch {
+          display: inline-flex;
+          width: fit-content;
+          padding: 4px;
+          border-radius: 12px;
+          background: rgba(148, 163, 184, 0.12);
+          gap: 4px;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .snapshot-type-switch {
+          background: rgba(148, 163, 184, 0.10);
+        }
+
+        .snapshot-view-hint {
+          font-size: 11px;
+          color: var(--muted-light);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .snapshot-view-hint {
+          color: var(--muted-dark);
         }
 
         .reference-tabs {
@@ -3633,6 +3844,27 @@ class WhiteboardRefDockApp {
             ${renderFilterButton("pending", "Pending", counts.pending, this.statusFilter)}
             ${renderFilterButton("skipped", "Skipped", counts.skipped, this.statusFilter)}
           </div>
+          <div class="snapshot-view-filters">
+            <div class="snapshot-view-filter-row">
+              <input
+                class="source-input snapshot-filter-input"
+                data-role="snapshot-filter-input"
+                value="${escapeAttribute(this.snapshotSearchValue)}"
+                placeholder="${escapeAttribute(snapshotFilterPlaceholder)}"
+              />
+              <button class="ghost-button" data-action="clear-snapshot-view-filters" ${
+                snapshotViewFilterActive ? "" : "disabled"
+              }>Clear</button>
+            </div>
+            <div class="snapshot-view-filter-row">
+              <div class="snapshot-type-switch">
+                ${renderSnapshotTypeFilterButton("all", "All", snapshotTypeCounts.all, this.snapshotTypeFilter)}
+                ${renderSnapshotTypeFilterButton("block", "Blocks", snapshotTypeCounts.block, this.snapshotTypeFilter)}
+                ${renderSnapshotTypeFilterButton("page", "Pages", snapshotTypeCounts.page, this.snapshotTypeFilter)}
+              </div>
+              <span class="snapshot-view-hint">Temporary snapshot view filters only. No rebuild or sync changes.</span>
+            </div>
+          </div>
         </section>
 
         <section class="status-bar">
@@ -3682,7 +3914,7 @@ class WhiteboardRefDockApp {
 
     this.bindEvents();
     this.restoreScrollPosition();
-    this.restoreSourceInputState(root, preservedSourceInputState);
+    this.restoreFocusedInputState(root, preservedInputState);
   }
 }
 
@@ -3725,6 +3957,19 @@ function escapeAttribute(value: unknown): string {
 function renderFilterButton(filter: StatusFilter, label: string, count: number, activeFilter: StatusFilter): string {
   return `
     <button class="chip-button ${filter === activeFilter ? "active" : ""}" data-filter="${filter}">
+      ${escapeHtml(label)} <span class="count">${count}</span>
+    </button>
+  `;
+}
+
+function renderSnapshotTypeFilterButton(
+  filter: SnapshotTypeFilter,
+  label: string,
+  count: number,
+  activeFilter: SnapshotTypeFilter,
+): string {
+  return `
+    <button class="chip-button ${filter === activeFilter ? "active" : ""}" data-snapshot-type-filter="${filter}">
       ${escapeHtml(label)} <span class="count">${count}</span>
     </button>
   `;
