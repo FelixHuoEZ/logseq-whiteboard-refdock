@@ -2747,7 +2747,7 @@ class WhiteboardRefDockApp {
         .header-actions {
           display: inline-flex;
           align-items: center;
-          gap: 6px;
+          gap: 10px;
           flex-shrink: 0;
         }
 
@@ -2880,8 +2880,8 @@ class WhiteboardRefDockApp {
         }
 
         .icon-button {
-          width: 32px;
-          height: 32px;
+          width: 38px;
+          height: 38px;
           padding: 0;
           display: inline-flex;
           align-items: center;
@@ -2890,31 +2890,22 @@ class WhiteboardRefDockApp {
         }
 
         .primary-icon-button {
-          width: 34px;
-          height: 34px;
+          width: 42px;
+          height: 42px;
           padding: 0;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          border-radius: 10px;
+          border-radius: 12px;
           background: var(--accent);
           color: white;
           border-color: transparent;
+          box-shadow: 0 6px 16px rgba(37, 99, 235, 0.22);
         }
 
         .icon-button svg {
-          width: 15px;
-          height: 15px;
-          stroke: currentColor;
-          fill: none;
-          stroke-width: 1.9;
-          stroke-linecap: round;
-          stroke-linejoin: round;
-        }
-
-        .primary-icon-button svg {
-          width: 15px;
-          height: 15px;
+          width: 17px;
+          height: 17px;
           stroke: currentColor;
           fill: none;
           stroke-width: 2;
@@ -2922,31 +2913,41 @@ class WhiteboardRefDockApp {
           stroke-linejoin: round;
         }
 
+        .primary-icon-button svg {
+          width: 18px;
+          height: 18px;
+          stroke: currentColor;
+          fill: none;
+          stroke-width: 2.2;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+        }
+
         .compact-filter-button {
-          min-width: 36px;
-          height: 32px;
-          padding: 0 8px;
+          min-width: 46px;
+          height: 38px;
+          padding: 0 10px;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          gap: 5px;
+          gap: 6px;
           background: transparent;
           color: inherit;
           border-color: transparent;
         }
 
         .compact-filter-button svg {
-          width: 14px;
-          height: 14px;
+          width: 16px;
+          height: 16px;
           stroke: currentColor;
           fill: none;
-          stroke-width: 1.9;
+          stroke-width: 2;
           stroke-linecap: round;
           stroke-linejoin: round;
         }
 
         .compact-filter-count {
-          font-size: 10px;
+          font-size: 11px;
           font-weight: 700;
           line-height: 1;
           color: inherit;
