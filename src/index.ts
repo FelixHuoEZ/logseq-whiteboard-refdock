@@ -3419,16 +3419,39 @@ class WhiteboardRefDockApp {
               <div class="header-actions">
                 ${
                   locatePreviewActive
-                    ? `<button class="ghost-button icon-button" data-action="back-to-whiteboard" aria-label="Back to Whiteboard" title="Back to Whiteboard">
-                        <svg viewBox="0 0 20 20" aria-hidden="true">
-                          <path d="M8.25 5 3.75 9.5l4.5 4.5" />
-                          <path d="M4.25 9.5H13a3.75 3.75 0 0 1 0 7.5h-1.5" />
-                        </svg>
-                      </button>`
+                    ? renderHeaderActionIconButton(
+                        "back-to-whiteboard",
+                        "Back to Whiteboard",
+                        `<svg viewBox="0 0 20 20" aria-hidden="true">
+                           <path d="M8.25 5 3.75 9.5l4.5 4.5" />
+                           <path d="M4.25 9.5H13a3.75 3.75 0 0 1 0 7.5h-1.5" />
+                         </svg>`,
+                      )
                     : ""
                 }
-                <button class="ghost-button" data-action="refresh-dock">Refresh</button>
-                <button class="ghost-button" data-action="toggle-dock">${isDockActive ? "Hide" : "Show"}</button>
+                ${renderHeaderActionIconButton(
+                  "refresh-dock",
+                  "Refresh",
+                  `<svg viewBox="0 0 20 20" aria-hidden="true">
+                     <path d="M16 10a6 6 0 1 1-1.76-4.24" />
+                     <path d="M16 4.5v4h-4" />
+                   </svg>`,
+                )}
+                ${renderHeaderActionIconButton(
+                  "toggle-dock",
+                  isDockActive ? "Hide" : "Show",
+                  isDockActive
+                    ? `<svg viewBox="0 0 20 20" aria-hidden="true">
+                         <rect x="3" y="4" width="14" height="12" rx="2" />
+                         <path d="M12.5 4v12" />
+                         <path d="M14.75 10h-4.5" />
+                       </svg>`
+                    : `<svg viewBox="0 0 20 20" aria-hidden="true">
+                         <rect x="3" y="4" width="14" height="12" rx="2" />
+                         <path d="M12.5 4v12" />
+                         <path d="M10.25 10h4.5" />
+                       </svg>`,
+                )}
               </div>
             </div>
           </div>
@@ -3682,6 +3705,19 @@ function renderThemePreferenceButton(preference: ThemePreference, label: string,
     >
       ${icon}
       <span>${escapeHtml(label)}</span>
+    </button>
+  `;
+}
+
+function renderHeaderActionIconButton(action: string, label: string, icon: string): string {
+  return `
+    <button
+      class="ghost-button icon-button"
+      data-action="${escapeAttribute(action)}"
+      aria-label="${escapeAttribute(label)}"
+      title="${escapeAttribute(label)}"
+    >
+      ${icon}
     </button>
   `;
 }
