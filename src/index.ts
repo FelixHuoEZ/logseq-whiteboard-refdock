@@ -2718,6 +2718,11 @@ class WhiteboardRefDockApp {
           gap: 8px;
         }
 
+        .filters {
+          display: grid;
+          gap: 10px;
+        }
+
         .header-row,
         .control-row,
         .filter-row,
@@ -2810,8 +2815,10 @@ class WhiteboardRefDockApp {
           content: attr(data-tooltip);
           position: absolute;
           right: 0;
+          left: auto;
           top: calc(100% + 8px);
-          max-width: 220px;
+          width: max-content;
+          max-width: min(320px, calc(100vw - 40px));
           padding: 6px 8px;
           border-radius: 8px;
           background: rgba(15, 23, 42, 0.96);
@@ -2820,12 +2827,15 @@ class WhiteboardRefDockApp {
           font-weight: 600;
           line-height: 1.35;
           white-space: normal;
+          word-break: normal;
+          overflow-wrap: break-word;
           text-align: left;
           pointer-events: none;
           opacity: 0;
           transform: translateY(-3px);
+          transform-origin: top right;
           transition: opacity 0.14s ease, transform 0.14s ease;
-          transition-delay: 0s;
+          transition-delay: 0ms;
           z-index: 30;
           box-shadow: 0 10px 24px rgba(15, 23, 42, 0.22);
         }
@@ -2834,7 +2844,7 @@ class WhiteboardRefDockApp {
         .has-tooltip:focus-visible::after {
           opacity: 1;
           transform: translateY(0);
-          transition-delay: 0.1s;
+          transition-delay: 100ms;
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] .subtitle,
