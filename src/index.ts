@@ -251,6 +251,7 @@ class WhiteboardRefDockApp {
   private logseqThemeMode: ThemeMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   private themeMode: ThemeMode = this.logseqThemeMode;
   private diagnosticsCollapsed = true;
+  private savedSourcesCollapsed = false;
   private resizeCleanup: (() => void) | null = null;
   private syncWriteTimer: number | null = null;
   private syncWriteInFlight = false;
@@ -551,26 +552,6 @@ class WhiteboardRefDockApp {
       default:
         return "Graph sync enabled";
     }
-  }
-
-  private getGraphSyncHint(): string {
-    if (this.getSyncMode() !== "graph-backed") {
-      return "Sync is managed in plugin settings. RefDock is currently using local-only storage.";
-    }
-
-    if (this.graphSyncStatus === "error" && this.graphSyncError) {
-      return `Graph sync failed: ${this.graphSyncError}`;
-    }
-
-    if (this.graphSyncStatus === "pending") {
-      return "Graph sync is queued. Local cache remains active.";
-    }
-
-    if (this.graphSyncStatus === "syncing") {
-      return "Graph sync is writing review state for the current whiteboard.";
-    }
-
-    return "Sync is managed in plugin settings. Local cache and graph sync are both active.";
   }
 
   ensureSyncModeSettingInitialized(): void {
@@ -2283,6 +2264,11 @@ class WhiteboardRefDockApp {
       this.render();
     });
 
+    root.querySelector<HTMLElement>("[data-action='toggle-saved-sources']")?.addEventListener("click", () => {
+      this.savedSourcesCollapsed = !this.savedSourcesCollapsed;
+      this.render();
+    });
+
     root.querySelector<HTMLElement>("[data-action='toggle-dock']")?.addEventListener("click", () => {
       void this.toggleDock();
     });
@@ -2628,10 +2614,9 @@ class WhiteboardRefDockApp {
     const locatePreviewState = this.locatePreviewState;
     const locatePreviewActive = Boolean(locatePreviewState && !this.getRouteWhiteboardName());
     const isDockActive = Boolean(this.currentWhiteboard && this.graphState.dockVisible);
-    const surfaceHint =
-      this.surfaceMode === "host"
-        ? "Host dock active. Drag cards directly into the whiteboard."
-        : "Iframe dock fallback. Drag support depends on the current Logseq runtime.";
+    const hasFeedbackMessage = Boolean(this.error || this.message);
+    const removeActiveDisabled = !activeReviewKey;
+    const savedSourcesToggleLabel = this.savedSourcesCollapsed ? "Expand saved sources" : "Collapse saved sources";
     const root = this.renderRoot;
     const preservedInputState = this.captureFocusedInputState(root);
     if (this.iframeRoot !== root) {
@@ -2714,8 +2699,7 @@ class WhiteboardRefDockApp {
         .header,
         .sources,
         .controls,
-        .filters,
-        .status-bar {
+        .filters {
           padding: 12px 14px;
           border-bottom: 1px solid var(--panel-border-light);
         }
@@ -2723,8 +2707,7 @@ class WhiteboardRefDockApp {
         #${APP_ROOT_ID}[data-theme="dark"] .header,
         #${APP_ROOT_ID}[data-theme="dark"] .sources,
         #${APP_ROOT_ID}[data-theme="dark"] .controls,
-        #${APP_ROOT_ID}[data-theme="dark"] .filters,
-        #${APP_ROOT_ID}[data-theme="dark"] .status-bar {
+        #${APP_ROOT_ID}[data-theme="dark"] .filters {
           border-bottom-color: var(--panel-border-dark);
         }
 
@@ -2740,6 +2723,12 @@ class WhiteboardRefDockApp {
           display: flex;
           align-items: center;
           gap: 8px;
+        }
+
+        .control-row,
+        .filter-row,
+        .status-row {
+          flex-wrap: wrap;
         }
 
         .header-row {
@@ -2863,6 +2852,36 @@ class WhiteboardRefDockApp {
           stroke-linejoin: round;
         }
 
+        .compact-filter-button {
+          min-width: 36px;
+          height: 32px;
+          padding: 0 8px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 5px;
+          background: transparent;
+          color: inherit;
+          border-color: transparent;
+        }
+
+        .compact-filter-button svg {
+          width: 14px;
+          height: 14px;
+          stroke: currentColor;
+          fill: none;
+          stroke-width: 1.9;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+        }
+
+        .compact-filter-count {
+          font-size: 10px;
+          font-weight: 700;
+          line-height: 1;
+          color: inherit;
+        }
+
         #${APP_ROOT_ID}[data-theme="dark"] .ghost-button,
         #${APP_ROOT_ID}[data-theme="dark"] .status-button {
           border-color: var(--panel-border-dark);
@@ -2877,6 +2896,13 @@ class WhiteboardRefDockApp {
         .primary-button[disabled] {
           opacity: 0.6;
           cursor: wait;
+        }
+
+        .ghost-button[disabled],
+        .chip-button[disabled],
+        .status-button[disabled] {
+          opacity: 0.45;
+          cursor: default;
         }
 
         .chip-button {
@@ -2900,7 +2926,8 @@ class WhiteboardRefDockApp {
         }
 
         .chip-button.active,
-        .status-button.active {
+        .status-button.active,
+        .compact-filter-button.active {
           border-color: var(--accent);
           color: var(--accent);
           background: rgba(37, 99, 235, 0.10);
@@ -2945,6 +2972,13 @@ class WhiteboardRefDockApp {
           gap: 8px;
         }
 
+        .section-controls {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          flex-shrink: 0;
+        }
+
         .section-title {
           font-size: 11px;
           font-weight: 700;
@@ -2963,6 +2997,10 @@ class WhiteboardRefDockApp {
           max-height: 168px;
           overflow: auto;
           padding-right: 2px;
+        }
+
+        .source-list.collapsed {
+          display: none;
         }
 
         .source-row {
@@ -3106,9 +3144,22 @@ class WhiteboardRefDockApp {
           gap: 8px;
         }
 
-        .snapshot-view-filters {
-          display: grid;
+        .source-command-row,
+        .snapshot-view-toolbar {
+          display: flex;
+          align-items: center;
           gap: 8px;
+          min-width: 0;
+          flex-wrap: nowrap;
+        }
+
+        .source-command-row .source-input,
+        .snapshot-view-toolbar .input-with-icon {
+          min-width: 0;
+          flex: 1;
+        }
+
+        .snapshot-view-filters {
           padding: 10px 12px;
           border: 1px solid var(--panel-border-light);
           border-radius: 12px;
@@ -3120,42 +3171,46 @@ class WhiteboardRefDockApp {
           background: rgba(15, 23, 42, 0.42);
         }
 
-        .snapshot-view-filter-row {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-
         .snapshot-filter-input {
           min-width: 0;
-          flex: 1 1 180px;
-          padding: 8px 10px;
+          flex: 1;
+          padding: 8px 10px 8px 30px;
         }
 
         .snapshot-type-switch {
           display: inline-flex;
-          width: fit-content;
           padding: 4px;
           border-radius: 12px;
           background: rgba(148, 163, 184, 0.12);
           gap: 4px;
+          flex-shrink: 0;
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] .snapshot-type-switch {
           background: rgba(148, 163, 184, 0.10);
         }
 
-        .snapshot-view-hint {
-          font-size: 11px;
-          color: var(--muted-light);
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
+        .input-with-icon {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
         }
 
-        #${APP_ROOT_ID}[data-theme="dark"] .snapshot-view-hint {
-          color: var(--muted-dark);
+        .input-with-icon svg {
+          position: absolute;
+          left: 10px;
+          width: 14px;
+          height: 14px;
+          stroke: var(--muted-light);
+          fill: none;
+          stroke-width: 1.9;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+          pointer-events: none;
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .input-with-icon svg {
+          stroke: var(--muted-dark);
         }
 
         .reference-tabs {
@@ -3265,11 +3320,6 @@ class WhiteboardRefDockApp {
         #${APP_ROOT_ID}[data-theme="dark"] .width-chip {
           border-color: var(--panel-border-dark);
           background: rgba(15, 23, 42, 0.5);
-        }
-
-        .status-bar {
-          display: grid;
-          gap: 4px;
         }
 
         .message {
@@ -3476,14 +3526,17 @@ class WhiteboardRefDockApp {
           display: flex;
           gap: 8px;
           align-items: center;
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
           justify-content: flex-end;
+          min-width: 0;
+          margin-left: auto;
         }
 
         .sync-actions {
           display: flex;
           gap: 8px;
           flex-wrap: wrap;
+          min-width: 0;
         }
 
         .sync-chip {
@@ -3496,6 +3549,8 @@ class WhiteboardRefDockApp {
           font-weight: 600;
           background: rgba(59, 130, 246, 0.10);
           color: #1d4ed8;
+          margin-left: auto;
+          flex-shrink: 0;
         }
 
         .sync-chip.local-only {
@@ -3754,9 +3809,23 @@ class WhiteboardRefDockApp {
         <section class="sources">
           <div class="section-row">
             <span class="section-title">Saved sources</span>
-            <span class="hint">${savedSourceEntries.length} saved</span>
+            <div class="section-controls">
+              <span class="hint">${savedSourceEntries.length} saved</span>
+              ${renderHeaderActionIconButton(
+                "toggle-saved-sources",
+                savedSourcesToggleLabel,
+                this.savedSourcesCollapsed
+                  ? `<svg viewBox="0 0 20 20" aria-hidden="true">
+                       <path d="m6.5 8 3.5 3.5L13.5 8" />
+                     </svg>`
+                  : `<svg viewBox="0 0 20 20" aria-hidden="true">
+                       <path d="m8 6.5 3.5 3.5L8 13.5" />
+                     </svg>`,
+                { ariaExpanded: !this.savedSourcesCollapsed },
+              )}
+            </div>
           </div>
-          <div class="source-list">
+          <div class="source-list ${this.savedSourcesCollapsed ? "collapsed" : ""}">
             ${
               savedSourceEntries.length === 0
                 ? `<div class="source-empty">No saved sources on this whiteboard yet.</div>`
@@ -3797,38 +3866,43 @@ class WhiteboardRefDockApp {
               <button class="chip-button ${this.sourceType === "keyword" ? "active" : ""}" data-source-type="keyword">Keyword</button>
             </div>
             <div class="sync-status-row">
-              <span class="sync-chip ${escapeAttribute(this.getSyncMode() === "graph-backed" ? this.graphSyncStatus : "local-only")}">
-                ${escapeHtml(this.getGraphSyncStatusLabel())}
-              </span>
               <div class="sync-actions">
                 <button class="ghost-button" data-action="open-current-sync-page">Current sync file</button>
                 <button class="ghost-button" data-action="open-sync-index-page">All sync files</button>
               </div>
+              <span class="sync-chip ${escapeAttribute(this.getSyncMode() === "graph-backed" ? this.graphSyncStatus : "local-only")}">
+                ${escapeHtml(this.getGraphSyncStatusLabel())}
+              </span>
             </div>
           </div>
           <div class="controls-grid">
-            <input
-              class="source-input"
-              data-role="source-input"
-              value="${escapeAttribute(this.sourceValue)}"
-              placeholder="${escapeAttribute(sourcePlaceholder)}"
-            />
-            <div class="control-row">
+            <div class="source-command-row">
+              <input
+                class="source-input"
+                data-role="source-input"
+                value="${escapeAttribute(this.sourceValue)}"
+                placeholder="${escapeAttribute(sourcePlaceholder)}"
+              />
               <button class="primary-button" data-action="create-snapshot" ${this.busy ? "disabled" : ""}>${createSnapshotLabel}</button>
-              <button class="ghost-button" data-action="clear-snapshot">Remove Active</button>
-            </div>
-            <div class="message ${this.error ? "error" : ""}">
-              ${escapeHtml(
-                this.error ||
-                  this.message ||
-                  (this.sourceType === "page"
-                    ? "Page mode saves or refreshes a page source on this whiteboard."
-                    : "Keyword mode saves or refreshes a keyword source on this whiteboard."),
+              ${renderHeaderActionIconButton(
+                "clear-snapshot",
+                "Remove active source",
+                `<svg viewBox="0 0 20 20" aria-hidden="true">
+                   <path d="M5.5 6.5h9" />
+                   <path d="M8 6.5V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5" />
+                   <path d="M7 8.5v6" />
+                   <path d="M10 8.5v6" />
+                   <path d="M13 8.5v6" />
+                   <path d="M6.5 6.5 7 15a1.5 1.5 0 0 0 1.5 1.5h3A1.5 1.5 0 0 0 13 15l.5-8.5" />
+                 </svg>`,
+                { disabled: removeActiveDisabled },
               )}
             </div>
-            <div class="hint">
-              ${escapeHtml(this.getGraphSyncHint())}
-            </div>
+            ${
+              hasFeedbackMessage
+                ? `<div class="message ${this.error ? "error" : ""}">${escapeHtml(this.error || this.message)}</div>`
+                : ""
+            }
           </div>
         </section>
 
@@ -3845,31 +3919,34 @@ class WhiteboardRefDockApp {
             ${renderFilterButton("skipped", "Skipped", counts.skipped, this.statusFilter)}
           </div>
           <div class="snapshot-view-filters">
-            <div class="snapshot-view-filter-row">
-              <input
-                class="source-input snapshot-filter-input"
-                data-role="snapshot-filter-input"
-                value="${escapeAttribute(this.snapshotSearchValue)}"
-                placeholder="${escapeAttribute(snapshotFilterPlaceholder)}"
-              />
-              <button class="ghost-button" data-action="clear-snapshot-view-filters" ${
-                snapshotViewFilterActive ? "" : "disabled"
-              }>Clear</button>
-            </div>
-            <div class="snapshot-view-filter-row">
+            <div class="snapshot-view-toolbar">
+              <label class="input-with-icon" title="${escapeAttribute(snapshotFilterPlaceholder)}">
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <circle cx="9" cy="9" r="5.5"></circle>
+                  <path d="m13.5 13.5 3 3"></path>
+                </svg>
+                <input
+                  class="source-input snapshot-filter-input"
+                  data-role="snapshot-filter-input"
+                  value="${escapeAttribute(this.snapshotSearchValue)}"
+                  placeholder="${escapeAttribute(snapshotFilterPlaceholder)}"
+                />
+              </label>
               <div class="snapshot-type-switch">
                 ${renderSnapshotTypeFilterButton("all", "All", snapshotTypeCounts.all, this.snapshotTypeFilter)}
                 ${renderSnapshotTypeFilterButton("block", "Blocks", snapshotTypeCounts.block, this.snapshotTypeFilter)}
                 ${renderSnapshotTypeFilterButton("page", "Pages", snapshotTypeCounts.page, this.snapshotTypeFilter)}
               </div>
-              <span class="snapshot-view-hint">Temporary snapshot view filters only. No rebuild or sync changes.</span>
+              ${renderHeaderActionIconButton(
+                "clear-snapshot-view-filters",
+                "Clear temporary snapshot filters",
+                `<svg viewBox="0 0 20 20" aria-hidden="true">
+                   <path d="m6 6 8 8" />
+                   <path d="m14 6-8 8" />
+                 </svg>`,
+                { disabled: !snapshotViewFilterActive },
+              )}
             </div>
-          </div>
-        </section>
-
-        <section class="status-bar">
-          <div class="status-row">
-            <span class="message">${escapeHtml(surfaceHint)}</span>
           </div>
         </section>
 
@@ -3968,9 +4045,34 @@ function renderSnapshotTypeFilterButton(
   count: number,
   activeFilter: SnapshotTypeFilter,
 ): string {
+  const icon =
+    filter === "all"
+      ? `<svg viewBox="0 0 20 20" aria-hidden="true">
+           <path d="M5 6.5h10" />
+           <path d="M5 10h10" />
+           <path d="M5 13.5h10" />
+         </svg>`
+      : filter === "block"
+        ? `<svg viewBox="0 0 20 20" aria-hidden="true">
+             <rect x="4.5" y="4.5" width="11" height="11" rx="2"></rect>
+             <path d="M8 8h4" />
+             <path d="M8 10h4" />
+             <path d="M8 12h3" />
+           </svg>`
+        : `<svg viewBox="0 0 20 20" aria-hidden="true">
+             <path d="M6.5 3.5h5l3 3V15a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 15V5A1.5 1.5 0 0 1 6.5 3.5Z"></path>
+             <path d="M11.5 3.5V7h3"></path>
+           </svg>`;
+
   return `
-    <button class="chip-button ${filter === activeFilter ? "active" : ""}" data-snapshot-type-filter="${filter}">
-      ${escapeHtml(label)} <span class="count">${count}</span>
+    <button
+      class="ghost-button compact-filter-button ${filter === activeFilter ? "active" : ""}"
+      data-snapshot-type-filter="${filter}"
+      aria-label="${escapeAttribute(`${label} (${count})`)}"
+      title="${escapeAttribute(`${label} (${count})`)}"
+    >
+      ${icon}
+      <span class="compact-filter-count">${count}</span>
     </button>
   `;
 }
@@ -4023,13 +4125,25 @@ function renderThemePreferenceButton(preference: ThemePreference, label: string,
   `;
 }
 
-function renderHeaderActionIconButton(action: string, label: string, icon: string): string {
+function renderHeaderActionIconButton(
+  action: string,
+  label: string,
+  icon: string,
+  options?: { disabled?: boolean; className?: string; ariaExpanded?: boolean },
+): string {
+  const className = options?.className ? ` ${options.className}` : "";
+  const disabled = options?.disabled ? " disabled" : "";
+  const ariaExpanded =
+    typeof options?.ariaExpanded === "boolean" ? ` aria-expanded="${options.ariaExpanded ? "true" : "false"}"` : "";
+
   return `
     <button
-      class="ghost-button icon-button"
+      class="ghost-button icon-button${className}"
       data-action="${escapeAttribute(action)}"
       aria-label="${escapeAttribute(label)}"
       title="${escapeAttribute(label)}"
+      ${disabled}
+      ${ariaExpanded}
     >
       ${icon}
     </button>
