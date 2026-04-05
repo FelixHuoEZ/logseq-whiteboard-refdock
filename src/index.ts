@@ -53,6 +53,13 @@ interface LocatePreviewState {
   startedAt: number;
 }
 
+interface PreservedSourceInputState {
+  value: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+  selectionDirection: "forward" | "backward" | "none" | null;
+}
+
 const SETTINGS_SCHEMA = [
   {
     key: "enableGraphSync",
@@ -227,6 +234,7 @@ class WhiteboardRefDockApp {
   private currentWhiteboard: WhiteboardInfo | null = null;
   private sourceType: SnapshotSourceType = "page";
   private sourceValue = "";
+  private sourceInputComposing = false;
   private referenceFilter: ReferenceFilter = "linked";
   private statusFilter: StatusFilter = "all";
   private message = "";
@@ -2243,11 +2251,28 @@ class WhiteboardRefDockApp {
       });
     });
 
+    root.querySelector<HTMLInputElement>("[data-role='source-input']")?.addEventListener("compositionstart", () => {
+      this.sourceInputComposing = true;
+    });
+
+    root.querySelector<HTMLInputElement>("[data-role='source-input']")?.addEventListener("compositionend", (event) => {
+      const target = event.currentTarget as HTMLInputElement;
+      this.sourceInputComposing = false;
+      this.sourceValue = target.value;
+      this.error = "";
+      this.message = "";
+      this.render();
+    });
+
     root.querySelector<HTMLInputElement>("[data-role='source-input']")?.addEventListener("input", (event) => {
       const target = event.currentTarget as HTMLInputElement;
       this.sourceValue = target.value;
       this.error = "";
       this.message = "";
+      if (this.sourceInputComposing || (event as InputEvent).isComposing) {
+        return;
+      }
+
       this.render();
     });
 
@@ -2342,6 +2367,10 @@ class WhiteboardRefDockApp {
     });
 
     root.querySelector<HTMLElement>("[data-role='source-input']")?.addEventListener("keydown", (event) => {
+      if ((event as KeyboardEvent).isComposing || this.sourceInputComposing) {
+        return;
+      }
+
       if (event.key === "Enter") {
         event.preventDefault();
         void this.createSnapshot();
@@ -2383,6 +2412,44 @@ class WhiteboardRefDockApp {
     `;
   }
 
+  private captureSourceInputState(root: HTMLElement): PreservedSourceInputState | null {
+    const input = root.querySelector<HTMLInputElement>("[data-role='source-input']");
+    if (!input || input.ownerDocument?.activeElement !== input) {
+      return null;
+    }
+
+    return {
+      value: input.value,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+      selectionDirection: input.selectionDirection,
+    };
+  }
+
+  private restoreSourceInputState(root: HTMLElement, state: PreservedSourceInputState | null): void {
+    if (!state) {
+      return;
+    }
+
+    const input = root.querySelector<HTMLInputElement>("[data-role='source-input']");
+    if (!input) {
+      return;
+    }
+
+    input.focus({ preventScroll: true });
+    if (input.value !== state.value) {
+      input.value = state.value;
+    }
+
+    if (state.selectionStart !== null && state.selectionEnd !== null) {
+      try {
+        input.setSelectionRange(state.selectionStart, state.selectionEnd, state.selectionDirection ?? undefined);
+      } catch (_error) {
+        // Ignore unsupported selection restoration.
+      }
+    }
+  }
+
   render(): void {
     const snapshot = this.getActiveSnapshot();
     const activeReviewKey = this.getActiveReviewKey();
@@ -2407,6 +2474,7 @@ class WhiteboardRefDockApp {
         ? "Host dock active. Drag cards directly into the whiteboard."
         : "Iframe dock fallback. Drag support depends on the current Logseq runtime.";
     const root = this.renderRoot;
+    const preservedSourceInputState = this.captureSourceInputState(root);
     if (this.iframeRoot !== root) {
       this.iframeRoot.innerHTML = "";
     }
@@ -3614,6 +3682,7 @@ class WhiteboardRefDockApp {
 
     this.bindEvents();
     this.restoreScrollPosition();
+    this.restoreSourceInputState(root, preservedSourceInputState);
   }
 }
 
