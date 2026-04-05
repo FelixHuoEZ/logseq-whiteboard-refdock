@@ -20,6 +20,7 @@ export interface SnapshotItem {
   pageName?: string;
   pageTitle?: string;
   blockUuid?: string;
+  blockEntityId?: number;
   order: number;
   status: ItemStatus;
   matchedTitle?: string;

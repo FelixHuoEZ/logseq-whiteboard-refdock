@@ -1366,6 +1366,7 @@ async function buildSnapshot(params: {
         pageName,
         pageTitle: getItemPageTitle(candidate),
         blockUuid: itemType === "block" ? candidate.uuid : undefined,
+        blockEntityId: itemType === "block" ? candidate.id : undefined,
         matchedTitle: candidate.rawTitle ?? candidate.title,
         order: index,
         status: "unseen",

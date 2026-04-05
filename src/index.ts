@@ -161,6 +161,15 @@ function logLocatePreview(event: string, details?: Record<string, unknown>): voi
   console.info("[whiteboard-refdock][locate-preview]", event);
 }
 
+function logLocateBlock(event: string, details?: Record<string, unknown>): void {
+  if (details) {
+    console.info("[whiteboard-refdock][locate-block]", event, details);
+    return;
+  }
+
+  console.info("[whiteboard-refdock][locate-block]", event);
+}
+
 function normalizeShortcutForLogseq(value: string): string {
   const parts = value
     .split("+")
@@ -1252,6 +1261,125 @@ class WhiteboardRefDockApp {
     }
   }
 
+  private getDocumentCandidateEntries(): Array<{ label: string; doc: Document }> {
+    const candidates: Array<{ label: string; doc: Document }> = [];
+    const pushDocument = (label: string, candidate: Document | null | undefined) => {
+      if (!candidate || candidates.some((entry) => entry.doc === candidate)) {
+        return;
+      }
+
+      candidates.push({ label, doc: candidate });
+    };
+
+    try {
+      pushDocument("host-document", this.getHostDocument());
+    } catch (_error) {
+      // Ignore.
+    }
+
+    try {
+      pushDocument("document", document);
+    } catch (_error) {
+      // Ignore.
+    }
+
+    try {
+      pushDocument("frame-owner-document", window.frameElement?.ownerDocument ?? null);
+    } catch (_error) {
+      // Ignore.
+    }
+
+    try {
+      pushDocument("parent-document", window.parent?.document ?? null);
+    } catch (_error) {
+      // Ignore.
+    }
+
+    try {
+      pushDocument("top-document", window.top?.document ?? null);
+    } catch (_error) {
+      // Ignore.
+    }
+
+    return candidates;
+  }
+
+  private describeDocumentCandidate(label: string, candidate: Document): Record<string, unknown> {
+    let url = "";
+    try {
+      url = candidate.location?.href ?? candidate.URL ?? "";
+    } catch (_error) {
+      // Ignore.
+    }
+
+    const bodyChildren = candidate.body ? Array.from(candidate.body.children).slice(0, 6) : [];
+    return {
+      label,
+      url,
+      readyState: candidate.readyState,
+      hasMainContentContainer: Boolean(candidate.getElementById("main-content-container")),
+      hasHostContainer: Boolean(candidate.getElementById(HOST_CONTAINER_ID)),
+      bodyChildCount: candidate.body?.children.length ?? 0,
+      bodyChildSample: bodyChildren.map((element) => element.id || element.tagName.toLowerCase()),
+    };
+  }
+
+  private getLogseqRootDocument(): Document {
+    const candidates = this.getDocumentCandidateEntries();
+    const withMainContent = candidates.find((entry) => entry.doc.getElementById("main-content-container"));
+    if (withMainContent) {
+      return withMainContent.doc;
+    }
+
+    const withHostContainer = candidates.find((entry) => entry.doc.getElementById(HOST_CONTAINER_ID));
+    if (withHostContainer) {
+      return withHostContainer.doc;
+    }
+
+    return candidates[0]?.doc ?? document;
+  }
+
+  private isScrollableElement(element: HTMLElement): boolean {
+    if (element.getClientRects().length === 0) {
+      return false;
+    }
+
+    const view = element.ownerDocument.defaultView ?? window;
+    const style = view.getComputedStyle(element);
+    const overflowY = style.overflowY;
+    if (!["auto", "scroll", "overlay"].includes(overflowY)) {
+      return false;
+    }
+
+    return element.scrollHeight > element.clientHeight + 80 && element.clientHeight > 240 && element.clientWidth > 320;
+  }
+
+  private findLikelyScrollContainer(entry: { label: string; doc: Document }): HTMLElement | null {
+    const preferredSelectors = [
+      "#main-content-container",
+      ".cp__sidebar-main-content",
+      ".cp__sidebar-main-content > div",
+      "main",
+    ];
+
+    for (const selector of preferredSelectors) {
+      const match = entry.doc.querySelector(selector);
+      if (match instanceof HTMLElement && this.isScrollableElement(match)) {
+        return match;
+      }
+    }
+
+    const fallbackCandidates = Array.from(entry.doc.querySelectorAll<HTMLElement>("body *"))
+      .filter((element) => this.isScrollableElement(element))
+      .sort((left, right) => {
+        const leftArea = left.clientHeight * left.clientWidth;
+        const rightArea = right.clientHeight * right.clientWidth;
+        return rightArea - leftArea;
+      });
+
+    return fallbackCandidates[0] ?? null;
+  }
+
   private getPluginFrameElement(): HTMLElement | null {
     try {
       return window.frameElement instanceof HTMLElement ? window.frameElement : null;
@@ -1421,10 +1549,7 @@ class WhiteboardRefDockApp {
       return;
     }
 
-    const hostDocument = this.getHostDocument();
-    if (!hostDocument) {
-      return;
-    }
+    const hostDocument = this.getLogseqRootDocument();
 
     const handler = (event: Event) => {
       void this.handleLocatePreviewDocumentClick(event);
@@ -1521,11 +1646,7 @@ class WhiteboardRefDockApp {
   }
 
   private getBlockDomElementByUuid(blockUuid: string): HTMLElement | null {
-    const hostDocument = this.getHostDocument();
-    if (!hostDocument) {
-      return null;
-    }
-
+    const hostDocument = this.getLogseqRootDocument();
     const root = hostDocument.querySelector("#main-content-container") ?? hostDocument.body;
     const selector = `.ls-block[blockid="${blockUuid.replaceAll('"', '\\"')}"]`;
 
@@ -2091,6 +2212,300 @@ class WhiteboardRefDockApp {
     this.render();
   }
 
+  private navigateToBlockAnchor(
+    pageName: string,
+    blockUuid: string,
+    blockEntityId?: number,
+    replaceState = false,
+  ): void {
+    const anchor = `ls-block-${blockUuid}`;
+    const appWithAnchors = logseq.App as typeof logseq.App & {
+      pushState: (route: string, pathParams?: Record<string, unknown>, queryParams?: Record<string, unknown>) => void;
+      replaceState?: (route: string, pathParams?: Record<string, unknown>, queryParams?: Record<string, unknown>) => void;
+    };
+
+    if (replaceState && typeof appWithAnchors.replaceState === "function") {
+      logLocateBlock("navigate-anchor", { pageName, blockUuid, blockEntityId, anchor, replaceState: true });
+      appWithAnchors.replaceState("page", { name: pageName }, { anchor });
+      return;
+    }
+
+    logLocateBlock("navigate-anchor", { pageName, blockUuid, blockEntityId, anchor, replaceState: false });
+    appWithAnchors.pushState("page", { name: pageName }, { anchor });
+  }
+
+  private focusLocatedBlock(blockUuid: string): boolean {
+    const blockElement = this.getBlockDomElementByUuid(blockUuid);
+    if (!blockElement) {
+      return false;
+    }
+
+    blockElement.scrollIntoView({ block: "center", inline: "nearest", behavior: "auto" });
+    return true;
+  }
+
+  private flashLocatedBlock(blockUuid: string): boolean {
+    const blockElement = this.getBlockDomElementByUuid(blockUuid);
+    if (!blockElement) {
+      return false;
+    }
+
+    const previousTransition = blockElement.style.transition;
+    const previousBoxShadow = blockElement.style.boxShadow;
+    const previousBackgroundColor = blockElement.style.backgroundColor;
+
+    blockElement.style.transition = [
+      previousTransition,
+      "box-shadow 160ms ease",
+      "background-color 160ms ease",
+    ]
+      .filter(Boolean)
+      .join(", ");
+    blockElement.style.boxShadow = "0 0 0 2px rgba(59, 130, 246, 0.75)";
+    blockElement.style.backgroundColor = "rgba(59, 130, 246, 0.14)";
+
+    window.setTimeout(() => {
+      blockElement.style.transition = previousTransition;
+      blockElement.style.boxShadow = previousBoxShadow;
+      blockElement.style.backgroundColor = previousBackgroundColor;
+    }, 1400);
+
+    return true;
+  }
+
+  private getMainContentScrollContainer(): HTMLElement | null {
+    const documentEntries = this.getDocumentCandidateEntries();
+
+    for (const entry of documentEntries) {
+      const exactContainer = entry.doc.getElementById("main-content-container");
+      if (exactContainer instanceof HTMLElement) {
+        logLocateBlock("progressive-reveal:exact-scroll-container", {
+          document: this.describeDocumentCandidate(entry.label, entry.doc),
+          tagName: exactContainer.tagName.toLowerCase(),
+          id: exactContainer.id,
+          className: exactContainer.className,
+          clientHeight: exactContainer.clientHeight,
+          scrollHeight: exactContainer.scrollHeight,
+        });
+        return exactContainer;
+      }
+    }
+
+    for (const entry of documentEntries) {
+      const fallbackContainer = this.findLikelyScrollContainer(entry);
+      if (fallbackContainer) {
+        logLocateBlock("progressive-reveal:fallback-scroll-container", {
+          document: this.describeDocumentCandidate(entry.label, entry.doc),
+          tagName: fallbackContainer.tagName.toLowerCase(),
+          id: fallbackContainer.id,
+          className: fallbackContainer.className,
+          clientHeight: fallbackContainer.clientHeight,
+          scrollHeight: fallbackContainer.scrollHeight,
+        });
+        return fallbackContainer;
+      }
+    }
+
+    logLocateBlock("progressive-reveal:no-scroll-container", {
+      documents: documentEntries.map((entry) => this.describeDocumentCandidate(entry.label, entry.doc)),
+    });
+    return null;
+  }
+
+  private async progressivelyRevealBlock(blockUuid: string): Promise<boolean> {
+    if (this.focusLocatedBlock(blockUuid)) {
+      logLocateBlock("progressive-reveal:already-found", { blockUuid });
+      return true;
+    }
+
+    const scrollContainer = this.getMainContentScrollContainer();
+    if (!scrollContainer) {
+      return false;
+    }
+
+    logLocateBlock("progressive-reveal:start", {
+      blockUuid,
+      initialTop: scrollContainer.scrollTop,
+      clientHeight: scrollContainer.clientHeight,
+      scrollHeight: scrollContainer.scrollHeight,
+    });
+
+    let stalledIterations = 0;
+    for (let step = 0; step < 48; step += 1) {
+      if (this.focusLocatedBlock(blockUuid)) {
+        logLocateBlock("progressive-reveal:found-before-step", { blockUuid, step });
+        return true;
+      }
+
+      const previousTop = scrollContainer.scrollTop;
+      const previousHeight = scrollContainer.scrollHeight;
+      const delta = Math.max(360, Math.floor(scrollContainer.clientHeight * 0.9));
+      const nextTop = Math.min(
+        Math.max(0, previousHeight - scrollContainer.clientHeight),
+        previousTop + delta,
+      );
+
+      scrollContainer.scrollTo({ top: nextTop, behavior: "auto" });
+      await new Promise((resolve) => window.setTimeout(resolve, 90));
+
+      if (this.focusLocatedBlock(blockUuid)) {
+        logLocateBlock("progressive-reveal:found-after-step", {
+          blockUuid,
+          step,
+          previousTop,
+          nextTop,
+          currentTop: scrollContainer.scrollTop,
+          previousHeight,
+          currentHeight: scrollContainer.scrollHeight,
+        });
+        return true;
+      }
+
+      const currentTop = scrollContainer.scrollTop;
+      const currentHeight = scrollContainer.scrollHeight;
+      const progressed = currentTop > previousTop || currentHeight > previousHeight;
+      stalledIterations = progressed ? 0 : stalledIterations + 1;
+
+      logLocateBlock("progressive-reveal:step", {
+        blockUuid,
+        step,
+        previousTop,
+        nextTop,
+        currentTop,
+        previousHeight,
+        currentHeight,
+        progressed,
+        stalledIterations,
+      });
+
+      if (stalledIterations >= 3) {
+        logLocateBlock("progressive-reveal:stalled", {
+          blockUuid,
+          step,
+          currentTop,
+          currentHeight,
+        });
+        break;
+      }
+    }
+
+    const found = this.focusLocatedBlock(blockUuid);
+    logLocateBlock("progressive-reveal:done", {
+      blockUuid,
+      found,
+      finalTop: scrollContainer.scrollTop,
+      finalHeight: scrollContainer.scrollHeight,
+    });
+    return found;
+  }
+
+  private async resolveBlockEntityId(blockUuid: string, existingId?: number): Promise<number | undefined> {
+    if (typeof existingId === "number" && Number.isFinite(existingId)) {
+      return existingId;
+    }
+
+    try {
+      const block = await logseq.Editor.getBlock(blockUuid);
+      const resolvedId = getEntityId(block);
+      return typeof resolvedId === "number" ? resolvedId : undefined;
+    } catch (_error) {
+      return undefined;
+    }
+  }
+
+  private async locateBlockInPage(pageName: string, blockUuid: string, blockEntityId?: number): Promise<void> {
+    logLocateBlock("start", { pageName, blockUuid, blockEntityId });
+    this.navigateToBlockAnchor(pageName, blockUuid, blockEntityId);
+
+    const retryDelays = [0, 120, 240, 420, 680, 980];
+    let lastError: unknown = null;
+    let progressiveRevealTried = false;
+
+    for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+      const delayMs = retryDelays[attempt];
+      if (delayMs > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      }
+
+      const routePageName = this.getRoutePageName();
+      logLocateBlock("attempt", {
+        attempt,
+        delayMs,
+        pageName,
+        blockUuid,
+        routePageName,
+      });
+      if (routePageName && !this.isSameWhiteboardName(routePageName, pageName) && routePageName !== blockUuid) {
+        logLocateBlock("attempt:route-mismatch", {
+          attempt,
+          pageName,
+          routePageName,
+          blockUuid,
+        });
+        continue;
+      }
+
+      if (this.focusLocatedBlock(blockUuid)) {
+        logLocateBlock("success:dom-found", { attempt, blockUuid });
+        this.flashLocatedBlock(blockUuid);
+        return;
+      }
+
+      try {
+        await logseq.Editor.scrollToBlockInPage(pageName, blockUuid, { replaceState: true });
+        lastError = null;
+        logLocateBlock("attempt:scroll-api-ok", { attempt, pageName, blockUuid });
+      } catch (error) {
+        lastError = error;
+        logLocateBlock("attempt:scroll-api-failed", {
+          attempt,
+          pageName,
+          blockUuid,
+          error: getRenderableErrorMessage(error),
+        });
+      }
+
+      if (this.focusLocatedBlock(blockUuid)) {
+        logLocateBlock("success:after-scroll-api", { attempt, blockUuid });
+        this.flashLocatedBlock(blockUuid);
+        return;
+      }
+
+      if (!progressiveRevealTried && attempt >= 1) {
+        progressiveRevealTried = true;
+        if (await this.progressivelyRevealBlock(blockUuid)) {
+          logLocateBlock("success:after-progressive-reveal", { attempt, blockUuid });
+          this.flashLocatedBlock(blockUuid);
+          return;
+        }
+      }
+
+      if (attempt < retryDelays.length - 1) {
+        this.navigateToBlockAnchor(pageName, blockUuid, blockEntityId, true);
+      }
+    }
+
+    logLocateBlock("failed", {
+      pageName,
+      blockUuid,
+      blockEntityId,
+      progressiveRevealTried,
+      routePageName: this.getRoutePageName(),
+      targetFoundAtEnd: Boolean(this.getBlockDomElementByUuid(blockUuid)),
+      lastError: lastError ? getRenderableErrorMessage(lastError) : null,
+    });
+
+    if (lastError) {
+      console.warn("whiteboard-refdock locate block failed", {
+        pageName,
+        blockUuid,
+        blockEntityId,
+        progressiveRevealTried,
+        error: getRenderableErrorMessage(lastError),
+      });
+    }
+  }
+
   private async openItem(itemId: string, options?: { inSidebar?: boolean }): Promise<void> {
     const snapshot = this.getActiveSnapshot();
     if (!snapshot) {
@@ -2130,7 +2545,19 @@ class WhiteboardRefDockApp {
     this.startLocatePreview(item);
 
     if (item.type === "block" && item.blockUuid) {
-      await logseq.Editor.scrollToBlockInPage(item.pageName, item.blockUuid);
+      const blockEntityId = await this.resolveBlockEntityId(item.blockUuid, item.blockEntityId);
+      logLocateBlock("open-item:block", {
+        pageName: item.pageName,
+        blockUuid: item.blockUuid,
+        existingBlockEntityId: item.blockEntityId ?? null,
+        resolvedBlockEntityId: blockEntityId ?? null,
+      });
+      if (blockEntityId && item.blockEntityId !== blockEntityId) {
+        item.blockEntityId = blockEntityId;
+        this.persist();
+      }
+
+      await this.locateBlockInPage(item.pageName, item.blockUuid, blockEntityId);
       return;
     }
 

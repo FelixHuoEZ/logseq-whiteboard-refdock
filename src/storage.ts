@@ -83,6 +83,7 @@ function normalizeSnapshotItem(item: unknown, index: number): SnapshotItem | nul
     pageName: typeof record.pageName === "string" ? record.pageName : undefined,
     pageTitle: typeof record.pageTitle === "string" ? record.pageTitle : undefined,
     blockUuid: typeof record.blockUuid === "string" ? record.blockUuid : undefined,
+    blockEntityId: typeof record.blockEntityId === "number" && Number.isFinite(record.blockEntityId) ? record.blockEntityId : undefined,
     order: typeof record.order === "number" && Number.isFinite(record.order) ? record.order : index,
     status: normalizeStatus(record.status),
     matchedTitle: typeof record.matchedTitle === "string" ? record.matchedTitle : undefined,
