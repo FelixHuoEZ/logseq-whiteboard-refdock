@@ -2524,7 +2524,7 @@ class WhiteboardRefDockApp {
         .header-actions {
           display: inline-flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
           flex-shrink: 0;
         }
 
@@ -2532,8 +2532,9 @@ class WhiteboardRefDockApp {
           display: inline-flex;
           align-items: center;
           gap: 8px;
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
           justify-content: flex-end;
+          min-width: 0;
         }
 
         .title-group {
@@ -2545,7 +2546,7 @@ class WhiteboardRefDockApp {
         .subtitle-row {
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
           min-width: 0;
         }
 
@@ -2569,16 +2570,6 @@ class WhiteboardRefDockApp {
           text-overflow: ellipsis;
         }
 
-        .header-note {
-          margin: 0;
-          font-size: 11px;
-          line-height: 1.35;
-          color: var(--muted-light);
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
         .preview-chip {
           display: inline-flex;
           align-items: center;
@@ -2594,7 +2585,6 @@ class WhiteboardRefDockApp {
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] .subtitle,
-        #${APP_ROOT_ID}[data-theme="dark"] .header-note,
         #${APP_ROOT_ID}[data-theme="dark"] .hint,
         #${APP_ROOT_ID}[data-theme="dark"] .message,
         #${APP_ROOT_ID}[data-theme="dark"] .count {
@@ -2624,6 +2614,26 @@ class WhiteboardRefDockApp {
           background: transparent;
           color: inherit;
           border-color: var(--panel-border-light);
+        }
+
+        .icon-button {
+          width: 32px;
+          height: 32px;
+          padding: 0;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 10px;
+        }
+
+        .icon-button svg {
+          width: 15px;
+          height: 15px;
+          stroke: currentColor;
+          fill: none;
+          stroke-width: 1.9;
+          stroke-linecap: round;
+          stroke-linejoin: round;
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] .ghost-button,
@@ -3391,13 +3401,14 @@ class WhiteboardRefDockApp {
               <p class="eyebrow">Review dock</p>
               <div class="subtitle-row">
                 <p class="subtitle">${escapeHtml(routeLabel)}</p>
-                ${locatePreviewActive ? `<span class="preview-chip">Locate preview</span>` : ""}
+                ${
+                  locatePreviewActive && locatePreviewState
+                    ? `<span class="preview-chip" title="${escapeAttribute(
+                        `Locate preview: viewing ${locatePreviewState.targetLabel} outside the whiteboard`,
+                      )}">Locate preview</span>`
+                    : ""
+                }
               </div>
-              ${
-                locatePreviewActive && locatePreviewState
-                  ? `<p class="header-note">Viewing ${escapeHtml(locatePreviewState.targetLabel)} outside the whiteboard. Use Back to Whiteboard to return.</p>`
-                  : ""
-              }
             </div>
             <div class="header-controls">
               <div class="theme-switch" role="tablist" aria-label="RefDock theme">
@@ -3406,7 +3417,16 @@ class WhiteboardRefDockApp {
                 ${renderThemePreferenceButton("light", "Light", this.getThemePreference())}
               </div>
               <div class="header-actions">
-                ${locatePreviewActive ? `<button class="ghost-button" data-action="back-to-whiteboard">Back to Whiteboard</button>` : ""}
+                ${
+                  locatePreviewActive
+                    ? `<button class="ghost-button icon-button" data-action="back-to-whiteboard" aria-label="Back to Whiteboard" title="Back to Whiteboard">
+                        <svg viewBox="0 0 20 20" aria-hidden="true">
+                          <path d="M8.25 5 3.75 9.5l4.5 4.5" />
+                          <path d="M4.25 9.5H13a3.75 3.75 0 0 1 0 7.5h-1.5" />
+                        </svg>
+                      </button>`
+                    : ""
+                }
                 <button class="ghost-button" data-action="refresh-dock">Refresh</button>
                 <button class="ghost-button" data-action="toggle-dock">${isDockActive ? "Hide" : "Show"}</button>
               </div>
