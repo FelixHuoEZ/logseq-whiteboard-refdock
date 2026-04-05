@@ -251,6 +251,7 @@ class WhiteboardRefDockApp {
   private snapshotTypeFilter: SnapshotTypeFilter = "all";
   private snapshotFilterScopeReviewKey: string | null = null;
   private snapshotFilterInputComposing = false;
+  private pendingFocusedInputState: PreservedInputState | null = null;
   private referenceFilter: ReferenceFilter = "linked";
   private statusFilter: StatusFilter = "all";
   private message = "";
@@ -2825,6 +2826,7 @@ class WhiteboardRefDockApp {
       const target = event.currentTarget as HTMLInputElement;
       this.sourceInputComposing = false;
       this.sourceValue = target.value;
+      this.rememberFocusedInput(target);
       this.error = "";
       this.message = "";
       this.render();
@@ -2838,12 +2840,14 @@ class WhiteboardRefDockApp {
       const target = event.currentTarget as HTMLInputElement;
       this.snapshotFilterInputComposing = false;
       this.snapshotSearchValue = target.value;
+      this.rememberFocusedInput(target);
       this.render();
     });
 
     root.querySelector<HTMLInputElement>("[data-role='snapshot-filter-input']")?.addEventListener("input", (event) => {
       const target = event.currentTarget as HTMLInputElement;
       this.snapshotSearchValue = target.value;
+      this.rememberFocusedInput(target);
       if (this.snapshotFilterInputComposing || (event as InputEvent).isComposing) {
         return;
       }
@@ -2854,6 +2858,7 @@ class WhiteboardRefDockApp {
     root.querySelector<HTMLInputElement>("[data-role='source-input']")?.addEventListener("input", (event) => {
       const target = event.currentTarget as HTMLInputElement;
       this.sourceValue = target.value;
+      this.rememberFocusedInput(target);
       this.error = "";
       this.message = "";
       if (this.sourceInputComposing || (event as InputEvent).isComposing) {
@@ -3011,27 +3016,39 @@ class WhiteboardRefDockApp {
     `;
   }
 
-  private captureFocusedInputState(root: HTMLElement): PreservedInputState | null {
-    const activeElement = root.ownerDocument?.activeElement;
-    if (!(activeElement instanceof HTMLInputElement)) {
-      return null;
-    }
-
-    const role = activeElement.dataset.role;
+  private buildPreservedInputState(input: HTMLInputElement): PreservedInputState | null {
+    const role = input.dataset.role;
     if (role !== "source-input" && role !== "snapshot-filter-input") {
       return null;
     }
 
     return {
       role,
-      value: activeElement.value,
-      selectionStart: activeElement.selectionStart,
-      selectionEnd: activeElement.selectionEnd,
-      selectionDirection: activeElement.selectionDirection,
+      value: input.value,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+      selectionDirection: input.selectionDirection,
     };
   }
 
+  private rememberFocusedInput(input: HTMLInputElement): void {
+    this.pendingFocusedInputState = this.buildPreservedInputState(input);
+  }
+
+  private captureFocusedInputState(root: HTMLElement): PreservedInputState | null {
+    const activeElement = root.ownerDocument?.activeElement;
+    if (activeElement instanceof HTMLInputElement) {
+      const activeState = this.buildPreservedInputState(activeElement);
+      if (activeState) {
+        return activeState;
+      }
+    }
+
+    return this.pendingFocusedInputState;
+  }
+
   private restoreFocusedInputState(root: HTMLElement, state: PreservedInputState | null): void {
+    this.pendingFocusedInputState = null;
     if (!state) {
       return;
     }
@@ -3053,6 +3070,27 @@ class WhiteboardRefDockApp {
         // Ignore unsupported selection restoration.
       }
     }
+
+    const view = root.ownerDocument.defaultView ?? window;
+    view.requestAnimationFrame(() => {
+      const refreshedInput = root.querySelector<HTMLInputElement>(`[data-role='${state.role}']`);
+      if (!refreshedInput) {
+        return;
+      }
+
+      refreshedInput.focus({ preventScroll: true });
+      if (state.selectionStart !== null && state.selectionEnd !== null) {
+        try {
+          refreshedInput.setSelectionRange(
+            state.selectionStart,
+            state.selectionEnd,
+            state.selectionDirection ?? undefined,
+          );
+        } catch (_error) {
+          // Ignore unsupported selection restoration.
+        }
+      }
+    });
   }
 
   render(): void {
