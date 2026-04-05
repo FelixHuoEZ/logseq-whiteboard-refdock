@@ -1527,12 +1527,6 @@ class WhiteboardRefDockApp {
       return;
     }
 
-    if (item.status === "unseen") {
-      item.status = "seen";
-      this.recordItemStatus(snapshot, item.id, "seen");
-      this.persist();
-    }
-
     if (options?.inSidebar) {
       if (this.graphState.dockVisible) {
         this.graphState.dockVisible = false;
@@ -1852,11 +1846,25 @@ class WhiteboardRefDockApp {
         }
 
         event.dataTransfer.effectAllowed = "copy";
+      });
 
-        if (item.status === "unseen") {
+      element.addEventListener("dragend", (event) => {
+        const itemId = element.dataset.itemDrag;
+        const snapshot = this.getActiveSnapshot();
+        if (!itemId || !snapshot || !event.dataTransfer) {
+          return;
+        }
+
+        const item = snapshot.items.find((entry) => entry.id === itemId);
+        if (!item || item.status !== "unseen") {
+          return;
+        }
+
+        if (event.dataTransfer.dropEffect && event.dataTransfer.dropEffect !== "none") {
           item.status = "seen";
           this.recordItemStatus(snapshot, item.id, "seen");
           this.persist();
+          this.render();
         }
       });
     });
