@@ -1,6 +1,6 @@
 {
   "name": "logseq-whiteboard-refdock",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Collect linked and unlinked Logseq references by keyword, then drag them into a whiteboard for article planning and synthesis.",
   "author": "FelixHuoEZ",
   "contributors": [
