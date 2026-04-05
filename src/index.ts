@@ -208,6 +208,7 @@ class WhiteboardRefDockApp {
   private lastGraphSyncAt: number | null = null;
   private graphSyncError = "";
   private contextRefreshToken = 0;
+  private preserveDockOnNextNonWhiteboardRoute = false;
 
   constructor(root: HTMLElement) {
     this.iframeRoot = root;
@@ -289,6 +290,25 @@ class WhiteboardRefDockApp {
     if (refreshToken !== this.contextRefreshToken) {
       return;
     }
+
+    if (
+      !routeWhiteboardName &&
+      !nextWhiteboard &&
+      this.preserveDockOnNextNonWhiteboardRoute &&
+      this.currentWhiteboard &&
+      this.graphState.dockVisible
+    ) {
+      this.preserveDockOnNextNonWhiteboardRoute = false;
+      await this.syncDockSurface();
+      if (refreshToken !== this.contextRefreshToken) {
+        return;
+      }
+
+      this.render();
+      return;
+    }
+
+    this.preserveDockOnNextNonWhiteboardRoute = false;
 
     this.currentWhiteboard = nextWhiteboard;
     await this.hydrateCurrentWhiteboardFromGraphSync();
@@ -1550,6 +1570,8 @@ class WhiteboardRefDockApp {
       openInRightSidebar(sidebarTarget);
       return;
     }
+
+    this.preserveDockOnNextNonWhiteboardRoute = true;
 
     if (item.type === "block" && item.blockUuid) {
       await logseq.Editor.scrollToBlockInPage(item.pageName, item.blockUuid);
@@ -3032,8 +3054,7 @@ class WhiteboardRefDockApp {
                                 <span><span class="status-dot ${escapeAttribute(item.status)}"></span> ${escapeHtml(item.status)}</span>
                                 <span class="reference-chip ${escapeAttribute(item.referenceState)}">${escapeHtml(item.referenceState)}</span>
                                 <span>${escapeHtml(item.type)}</span>
-                                ${item.type === "block" && item.pageTitle ? `<span>${escapeHtml(item.pageTitle)}</span>` : ""}
-                                <span>${escapeHtml(item.pageName ?? item.blockUuid ?? "")}</span>
+                                ${renderItemContextMeta(item)}
                               </div>
                             </div>
                           </div>
@@ -3068,6 +3089,28 @@ function escapeHtml(value: unknown): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function normalizeDisplayValue(value: string | undefined): string {
+  return value ? value.replace(/\s+/g, " ").trim().toLocaleLowerCase() : "";
+}
+
+function renderItemContextMeta(item: SnapshotItem): string {
+  const values: string[] = [];
+
+  if (item.type === "block" && item.pageTitle) {
+    values.push(item.pageTitle);
+  }
+
+  const fallbackValue = item.pageName ?? item.blockUuid ?? "";
+  if (fallbackValue) {
+    const normalizedFallbackValue = normalizeDisplayValue(fallbackValue);
+    if (!values.some((value) => normalizeDisplayValue(value) === normalizedFallbackValue)) {
+      values.push(fallbackValue);
+    }
+  }
+
+  return values.map((value) => `<span>${escapeHtml(value)}</span>`).join("");
 }
 
 function escapeAttribute(value: unknown): string {

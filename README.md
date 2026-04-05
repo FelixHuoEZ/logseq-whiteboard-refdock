@@ -46,6 +46,15 @@ It is especially useful when you want to write an article by first using a white
 8. Mark items as `seen`, `unseen`, `pending`, or `skipped`.
 9. Use `Shift+Click` on `Locate` when you want to open the target in the right sidebar instead of the main content area.
 
+## Review Status Behavior
+
+- `Unseen` is the default state for a newly created snapshot item.
+- `Seen` can be set manually, or automatically after the item is successfully dropped into the whiteboard.
+- `Pending` is for items you want to keep unresolved and revisit later.
+- `Skipped` is for items you have decided not to add into the whiteboard.
+- `Locate` does not automatically change an item's status.
+- `Shift+Click` on `Locate` opens the target in Logseq's right sidebar and hides RefDock first.
+
 Default shortcut:
 
 - macOS: `Cmd+Option+R`
