@@ -1887,7 +1887,7 @@ class WhiteboardRefDockApp {
 
     try {
       const snapshot = await this.buildSnapshotForSource(whiteboard, this.sourceType, sourceValue);
-      const mergedSnapshot = this.storeSnapshot(snapshot, { resetScroll: true });
+      const mergedSnapshot = this.storeSnapshot(snapshot, { resetScroll: true, preserveReferenceFilter: false });
       this.message = `Saved ${mergedSnapshot.items.length} snapshot items.`;
     } catch (error) {
       const message = getRenderableErrorMessage(error);
@@ -1913,7 +1913,10 @@ class WhiteboardRefDockApp {
       : createSnapshotFromKeyword(whiteboard, sourceValue);
   }
 
-  private storeSnapshot(snapshot: Snapshot, options: { resetScroll: boolean }): Snapshot {
+  private storeSnapshot(
+    snapshot: Snapshot,
+    options: { resetScroll: boolean; preserveReferenceFilter: boolean },
+  ): Snapshot {
     const mergedSnapshot = this.mergeSnapshotWithReviewState(snapshot);
     const reviewKey = this.upsertSavedSource(mergedSnapshot);
 
@@ -1924,7 +1927,9 @@ class WhiteboardRefDockApp {
 
     this.syncSourceInputFromActiveSnapshot();
     this.statusFilter = "all";
-    this.selectDefaultReferenceFilter(mergedSnapshot);
+    if (!options.preserveReferenceFilter) {
+      this.selectDefaultReferenceFilter(mergedSnapshot);
+    }
     this.persist();
     this.scheduleCurrentWhiteboardSync();
 
@@ -2016,7 +2021,7 @@ class WhiteboardRefDockApp {
           : { id: whiteboardId, name: whiteboardName };
       const refreshedSnapshot = await this.buildSnapshotForSource(whiteboard, sourceType, sourceValue);
       const orderedSnapshot = this.preserveSnapshotItemOrder(existingSnapshot ?? null, refreshedSnapshot);
-      const mergedSnapshot = this.storeSnapshot(orderedSnapshot, { resetScroll: false });
+      const mergedSnapshot = this.storeSnapshot(orderedSnapshot, { resetScroll: false, preserveReferenceFilter: true });
       this.message = `Refreshed ${mergedSnapshot.sourceValue}.`;
     } catch (error) {
       const message = getRenderableErrorMessage(error);
