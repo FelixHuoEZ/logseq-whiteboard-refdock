@@ -331,6 +331,8 @@ class WhiteboardRefDockApp {
 
   async refreshContext(): Promise<void> {
     const refreshToken = ++this.contextRefreshToken;
+    const previousWhiteboardId = this.currentWhiteboard?.id ?? null;
+    const previousActiveReviewKey = this.getActiveReviewKey();
     const routeWhiteboardName = this.getRouteWhiteboardName();
 
     if (routeWhiteboardName && this.locatePreviewState) {
@@ -351,7 +353,10 @@ class WhiteboardRefDockApp {
 
       if (previewStillValid) {
         this.currentWhiteboard = this.locatePreviewState.whiteboard;
-        await this.applyResolvedWhiteboardContext(refreshToken);
+        await this.applyResolvedWhiteboardContext(refreshToken, {
+          previousWhiteboardId,
+          previousActiveReviewKey,
+        });
         return;
       }
 
@@ -364,7 +369,10 @@ class WhiteboardRefDockApp {
     }
 
     this.currentWhiteboard = nextWhiteboard;
-    await this.applyResolvedWhiteboardContext(refreshToken);
+    await this.applyResolvedWhiteboardContext(refreshToken, {
+      previousWhiteboardId,
+      previousActiveReviewKey,
+    });
   }
 
   async toggleDock(): Promise<void> {
@@ -374,7 +382,10 @@ class WhiteboardRefDockApp {
     this.render();
   }
 
-  private async applyResolvedWhiteboardContext(refreshToken: number): Promise<void> {
+  private async applyResolvedWhiteboardContext(
+    refreshToken: number,
+    previousContext?: { previousWhiteboardId: string | null; previousActiveReviewKey: string | null },
+  ): Promise<void> {
     await this.hydrateCurrentWhiteboardFromGraphSync();
     if (refreshToken !== this.contextRefreshToken) {
       return;
@@ -383,7 +394,15 @@ class WhiteboardRefDockApp {
     this.syncActiveReviewKey();
     this.syncSourceInputFromActiveSnapshot();
     this.setCurrentDockWidth(this.getCurrentDockWidth());
-    this.selectDefaultReferenceFilter(this.getActiveSnapshot());
+    const currentWhiteboardId = this.currentWhiteboard?.id ?? null;
+    const currentActiveReviewKey = this.getActiveReviewKey();
+    const shouldPreserveReferenceFilter =
+      previousContext &&
+      previousContext.previousWhiteboardId === currentWhiteboardId &&
+      previousContext.previousActiveReviewKey === currentActiveReviewKey;
+    if (!shouldPreserveReferenceFilter) {
+      this.selectDefaultReferenceFilter(this.getActiveSnapshot());
+    }
     this.persist();
     await this.syncDockSurface();
     if (refreshToken !== this.contextRefreshToken) {
