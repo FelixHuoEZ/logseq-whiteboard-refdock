@@ -32,7 +32,7 @@ function normalizeWidth(value: unknown, fallback = DEFAULT_DOCK_WIDTH): number {
 }
 
 function normalizeStatus(value: unknown): ItemStatus {
-  return value === "seen" || value === "skipped" || value === "unseen" ? value : "unseen";
+  return value === "seen" || value === "pending" || value === "skipped" || value === "unseen" ? value : "unseen";
 }
 
 function normalizeReferenceState(value: unknown): ReferenceState {

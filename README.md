@@ -1,6 +1,6 @@
 # Whiteboard RefDock
 
-Review saved linked and unlinked reference snapshots in a dedicated dock while working on a Logseq whiteboard.
+Collect linked and unlinked Logseq references by keyword, then drag them into a whiteboard for article planning and synthesis.
 
 ![Whiteboard RefDock preview](./assets/refdock-preview.png)
 
@@ -10,12 +10,14 @@ Whiteboard RefDock turns reference review into a whiteboard-first workflow.
 
 Instead of relying on Logseq's live references view, it creates saved sources for the current whiteboard and keeps that review queue visible in a dedicated right-side dock.
 
+It is especially useful when you want to write an article by first using a whiteboard to sort ideas. You can collect the linked and unlinked blocks or pages behind a keyword, drag the useful ones into the whiteboard, and then classify and synthesize them before writing.
+
 ## Features
 
 - Create a saved source from a page or a keyword.
 - Keep multiple saved sources per whiteboard instead of overwriting a single queue.
 - Review `Linked` and `Unlinked` references in separate tabs.
-- Mark items as `unseen`, `seen`, or `skipped`.
+- Mark items as `unseen`, `seen`, `pending`, or `skipped`.
 - Drag page and block items directly into the native Logseq whiteboard.
 - Restore saved sources, review state, scroll position, and dock width when you return.
 - Optionally enable graph-backed sync for saved sources and review state.
@@ -28,6 +30,7 @@ Instead of relying on Logseq's live references view, it creates saved sources fo
 
 - Large reference review sessions with hundreds of candidates.
 - Whiteboard synthesis workflows where references need triage before being dragged into the canvas.
+- Article-planning workflows where you want to gather keyword-based references on a whiteboard before drafting.
 - Users who want a persistent review queue instead of Logseq's live reference panel.
 - Users who want to keep review progress on the whiteboard and optionally sync it through the graph.
 
@@ -40,7 +43,7 @@ Instead of relying on Logseq's live references view, it creates saved sources fo
 5. Revisit any saved source from the `Saved sources` list.
 6. Review items in the `Linked` and `Unlinked` tabs.
 7. Drag useful items into the whiteboard.
-8. Mark items as `seen`, `unseen`, or `skipped`.
+8. Mark items as `seen`, `unseen`, `pending`, or `skipped`.
 9. Use `Shift+Click` on `Locate` when you want to open the target in the right sidebar instead of the main content area.
 
 Default shortcut:

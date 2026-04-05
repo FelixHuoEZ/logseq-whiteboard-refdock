@@ -24,6 +24,7 @@ const PROP_LINKED_COUNT = "refdock-linked-count";
 const PROP_UNLINKED_COUNT = "refdock-unlinked-count";
 const PROP_UNSEEN_COUNT = "refdock-unseen-count";
 const PROP_SEEN_COUNT = "refdock-seen-count";
+const PROP_PENDING_COUNT = "refdock-pending-count";
 const PROP_SKIPPED_COUNT = "refdock-skipped-count";
 const PROP_DELETED_AT = "refdock-deleted-at";
 const SCHEMA_VERSION = 1;
@@ -48,6 +49,7 @@ export interface SyncSourceSummary {
   unlinkedCount?: number;
   unseenCount?: number;
   seenCount: number;
+  pendingCount: number;
   skippedCount: number;
 }
 
@@ -280,7 +282,7 @@ function normalizeReviewStateFromBlock(
     const itemId = getStringProperty(properties, PROP_ITEM_ID);
     const status = getStringProperty(properties, PROP_STATUS);
     const updatedAt = getNumberProperty(properties, PROP_UPDATED_AT);
-    if (!itemId || !updatedAt || (status !== "seen" && status !== "skipped" && status !== "unseen")) {
+    if (!itemId || !updatedAt || (status !== "seen" && status !== "pending" && status !== "skipped" && status !== "unseen")) {
       continue;
     }
 
@@ -585,6 +587,7 @@ export async function writeWhiteboardSyncState(
               [PROP_UNLINKED_COUNT]: summary.unlinkedCount,
               [PROP_UNSEEN_COUNT]: summary.unseenCount,
               [PROP_SEEN_COUNT]: summary.seenCount,
+              [PROP_PENDING_COUNT]: summary.pendingCount,
               [PROP_SKIPPED_COUNT]: summary.skippedCount,
             }
           : {}),

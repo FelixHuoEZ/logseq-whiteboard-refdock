@@ -981,6 +981,7 @@ class WhiteboardRefDockApp {
       all: 0,
       unseen: 0,
       seen: 0,
+      pending: 0,
       skipped: 0,
     };
 
@@ -1026,6 +1027,7 @@ class WhiteboardRefDockApp {
       return {
         unseenCount: reviewItems.filter((item) => item.status === "unseen").length,
         seenCount: reviewItems.filter((item) => item.status === "seen").length,
+        pendingCount: reviewItems.filter((item) => item.status === "pending").length,
         skippedCount: reviewItems.filter((item) => item.status === "skipped").length,
       };
     }
@@ -1036,6 +1038,7 @@ class WhiteboardRefDockApp {
       unlinkedCount: 0,
       unseenCount: 0,
       seenCount: 0,
+      pendingCount: 0,
       skippedCount: 0,
     };
 
@@ -1048,6 +1051,8 @@ class WhiteboardRefDockApp {
 
       if (item.status === "seen") {
         summary.seenCount += 1;
+      } else if (item.status === "pending") {
+        summary.pendingCount += 1;
       } else if (item.status === "skipped") {
         summary.skippedCount += 1;
       } else {
@@ -2489,12 +2494,21 @@ class WhiteboardRefDockApp {
           background: linear-gradient(180deg, rgba(217, 119, 6, 0.06), rgba(255, 255, 255, 0.72));
         }
 
+        .item-card[data-status="pending"] {
+          border-color: rgba(124, 58, 237, 0.42);
+          background: linear-gradient(180deg, rgba(124, 58, 237, 0.06), rgba(255, 255, 255, 0.72));
+        }
+
         #${APP_ROOT_ID}[data-theme="dark"] .item-card[data-status="seen"] {
           background: linear-gradient(180deg, rgba(22, 163, 74, 0.10), rgba(15, 23, 42, 0.74));
         }
 
         #${APP_ROOT_ID}[data-theme="dark"] .item-card[data-status="skipped"] {
           background: linear-gradient(180deg, rgba(217, 119, 6, 0.10), rgba(15, 23, 42, 0.74));
+        }
+
+        #${APP_ROOT_ID}[data-theme="dark"] .item-card[data-status="pending"] {
+          background: linear-gradient(180deg, rgba(124, 58, 237, 0.12), rgba(15, 23, 42, 0.74));
         }
 
         .item-head {
@@ -2586,6 +2600,10 @@ class WhiteboardRefDockApp {
 
         .status-dot.skipped {
           background: var(--warning);
+        }
+
+        .status-dot.pending {
+          background: #7c3aed;
         }
 
         .empty-state {
@@ -2945,6 +2963,7 @@ class WhiteboardRefDockApp {
             ${renderFilterButton("all", "All", counts.all, this.statusFilter)}
             ${renderFilterButton("unseen", "Unseen", counts.unseen, this.statusFilter)}
             ${renderFilterButton("seen", "Seen", counts.seen, this.statusFilter)}
+            ${renderFilterButton("pending", "Pending", counts.pending, this.statusFilter)}
             ${renderFilterButton("skipped", "Skipped", counts.skipped, this.statusFilter)}
           </div>
         </section>
@@ -2981,6 +3000,7 @@ class WhiteboardRefDockApp {
                             <button class="ghost-button" data-item-open="${escapeAttribute(item.id)}">${item.type === "block" ? "Locate" : "Open"}</button>
                             <button class="status-button ${item.status === "seen" ? "active" : ""}" data-item-id="${escapeAttribute(item.id)}" data-item-status="seen">Seen</button>
                             <button class="status-button ${item.status === "unseen" ? "active" : ""}" data-item-id="${escapeAttribute(item.id)}" data-item-status="unseen">Unseen</button>
+                            <button class="status-button ${item.status === "pending" ? "active" : ""}" data-item-id="${escapeAttribute(item.id)}" data-item-status="pending">Pending</button>
                             <button class="status-button ${item.status === "skipped" ? "active" : ""}" data-item-id="${escapeAttribute(item.id)}" data-item-status="skipped">Skip</button>
                           </div>
                         </article>

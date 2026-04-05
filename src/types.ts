@@ -1,6 +1,6 @@
 export type SnapshotSourceType = "page" | "keyword";
 export type SnapshotItemType = "page" | "block";
-export type ItemStatus = "unseen" | "seen" | "skipped";
+export type ItemStatus = "unseen" | "seen" | "pending" | "skipped";
 export type StatusFilter = "all" | ItemStatus;
 export type ThemeMode = "light" | "dark";
 export type ThemePreference = ThemeMode | "auto";
