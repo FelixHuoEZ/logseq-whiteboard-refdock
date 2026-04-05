@@ -42,7 +42,7 @@ const IS_MAC_PLATFORM =
 const DEFAULT_TOGGLE_SHORTCUT_BINDING = "mod+alt+r";
 const DEFAULT_TOGGLE_SHORTCUT_LABEL = IS_MAC_PLATFORM ? "Cmd+Option+R" : "Ctrl+Alt+R";
 type SurfaceMode = "iframe" | "host";
-type ReferenceFilter = ReferenceState;
+type ReferenceFilter = "all" | ReferenceState;
 type SnapshotTypeFilter = "all" | SnapshotItemType;
 type GraphSyncStatus = "local-only" | "pending" | "syncing" | "synced" | "error";
 
@@ -1052,6 +1052,7 @@ class WhiteboardRefDockApp {
 
   private getReferenceCounts(snapshot: Snapshot | null): Record<ReferenceFilter, number> {
     const counts: Record<ReferenceFilter, number> = {
+      all: 0,
       linked: 0,
       unlinked: 0,
     };
@@ -1065,6 +1066,7 @@ class WhiteboardRefDockApp {
         continue;
       }
 
+      counts.all += 1;
       counts[item.referenceState] += 1;
     }
 
@@ -1124,7 +1126,7 @@ class WhiteboardRefDockApp {
   }
 
   private matchesReferenceAndTemporaryFilters(item: SnapshotItem): boolean {
-    if (item.referenceState !== this.referenceFilter) {
+    if (this.referenceFilter !== "all" && item.referenceState !== this.referenceFilter) {
       return false;
     }
 
@@ -1132,7 +1134,7 @@ class WhiteboardRefDockApp {
   }
 
   private matchesReferenceAndStatusAndSearchFilters(item: SnapshotItem): boolean {
-    if (item.referenceState !== this.referenceFilter) {
+    if (this.referenceFilter !== "all" && item.referenceState !== this.referenceFilter) {
       return false;
     }
 
@@ -2800,6 +2802,41 @@ class WhiteboardRefDockApp {
           flex-shrink: 0;
         }
 
+        .has-tooltip {
+          position: relative;
+        }
+
+        .has-tooltip::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          right: 0;
+          top: calc(100% + 8px);
+          max-width: 220px;
+          padding: 6px 8px;
+          border-radius: 8px;
+          background: rgba(15, 23, 42, 0.96);
+          color: #f8fafc;
+          font-size: 11px;
+          font-weight: 600;
+          line-height: 1.35;
+          white-space: normal;
+          text-align: left;
+          pointer-events: none;
+          opacity: 0;
+          transform: translateY(-3px);
+          transition: opacity 0.14s ease, transform 0.14s ease;
+          transition-delay: 0s;
+          z-index: 30;
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.22);
+        }
+
+        .has-tooltip:hover::after,
+        .has-tooltip:focus-visible::after {
+          opacity: 1;
+          transform: translateY(0);
+          transition-delay: 0.1s;
+        }
+
         #${APP_ROOT_ID}[data-theme="dark"] .subtitle,
         #${APP_ROOT_ID}[data-theme="dark"] .hint,
         #${APP_ROOT_ID}[data-theme="dark"] .message,
@@ -2842,12 +2879,35 @@ class WhiteboardRefDockApp {
           border-radius: 10px;
         }
 
+        .primary-icon-button {
+          width: 34px;
+          height: 34px;
+          padding: 0;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 10px;
+          background: var(--accent);
+          color: white;
+          border-color: transparent;
+        }
+
         .icon-button svg {
           width: 15px;
           height: 15px;
           stroke: currentColor;
           fill: none;
           stroke-width: 1.9;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+        }
+
+        .primary-icon-button svg {
+          width: 15px;
+          height: 15px;
+          stroke: currentColor;
+          fill: none;
+          stroke-width: 2;
           stroke-linecap: round;
           stroke-linejoin: round;
         }
@@ -3737,7 +3797,7 @@ class WhiteboardRefDockApp {
                 <p class="subtitle">${escapeHtml(routeLabel)}</p>
                 ${
                   locatePreviewActive && locatePreviewState
-                    ? `<span class="preview-chip" title="${escapeAttribute(
+                    ? `<span class="preview-chip has-tooltip" data-tooltip="${escapeAttribute(
                         `Locate preview: viewing ${locatePreviewState.targetLabel} outside the whiteboard`,
                       )}">Locate preview</span>`
                     : ""
@@ -3751,6 +3811,7 @@ class WhiteboardRefDockApp {
                 ${renderThemePreferenceButton("light", "Light", this.getThemePreference())}
               </div>
               <div class="header-actions">
+                <span class="width-chip" data-role="width-readout">${this.formatWidthLabel()}</span>
                 ${
                   locatePreviewActive
                     ? renderHeaderActionIconButton(
@@ -3788,21 +3849,6 @@ class WhiteboardRefDockApp {
                 )}
               </div>
             </div>
-          </div>
-          <div class="status-row">
-            <span class="hint">${
-              snapshot
-                ? `Snapshot source: ${escapeHtml(snapshot.sourceType)} · ${escapeHtml(snapshot.sourceValue)}`
-                : "No active snapshot"
-            }</span>
-            <span class="spacer"></span>
-            ${
-              snapshot
-                ? `<span class="snapshot-pill">${snapshot.items.length} items</span>`
-                : ""
-            }
-            <span class="width-chip" data-role="width-readout">${this.formatWidthLabel()}</span>
-            <span class="hint">Drag edge to resize</span>
           </div>
         </section>
 
@@ -3883,7 +3929,20 @@ class WhiteboardRefDockApp {
                 value="${escapeAttribute(this.sourceValue)}"
                 placeholder="${escapeAttribute(sourcePlaceholder)}"
               />
-              <button class="primary-button" data-action="create-snapshot" ${this.busy ? "disabled" : ""}>${createSnapshotLabel}</button>
+              ${renderPrimaryActionIconButton(
+                "create-snapshot",
+                createSnapshotLabel,
+                draftReviewKey && this.graphState.sourceMetaByReviewKey[draftReviewKey]
+                  ? `<svg viewBox="0 0 20 20" aria-hidden="true">
+                       <path d="M16 10a6 6 0 1 1-1.76-4.24" />
+                       <path d="M16 4.5v4h-4" />
+                     </svg>`
+                  : `<svg viewBox="0 0 20 20" aria-hidden="true">
+                       <path d="M10 4.5v11" />
+                       <path d="M4.5 10h11" />
+                     </svg>`,
+                this.busy,
+              )}
               ${renderHeaderActionIconButton(
                 "clear-snapshot",
                 "Remove active source",
@@ -3908,6 +3967,7 @@ class WhiteboardRefDockApp {
 
         <section class="filters">
           <div class="reference-tabs" role="tablist" aria-label="Reference type">
+            ${renderReferenceFilterButton("all", "All", referenceCounts.all, this.referenceFilter)}
             ${renderReferenceFilterButton("linked", "Linked", referenceCounts.linked, this.referenceFilter)}
             ${renderReferenceFilterButton("unlinked", "Unlinked", referenceCounts.unlinked, this.referenceFilter)}
           </div>
@@ -3920,7 +3980,7 @@ class WhiteboardRefDockApp {
           </div>
           <div class="snapshot-view-filters">
             <div class="snapshot-view-toolbar">
-              <label class="input-with-icon" title="${escapeAttribute(snapshotFilterPlaceholder)}">
+              <label class="input-with-icon">
                 <svg viewBox="0 0 20 20" aria-hidden="true">
                   <circle cx="9" cy="9" r="5.5"></circle>
                   <path d="m13.5 13.5 3 3"></path>
@@ -4066,10 +4126,10 @@ function renderSnapshotTypeFilterButton(
 
   return `
     <button
-      class="ghost-button compact-filter-button ${filter === activeFilter ? "active" : ""}"
+      class="ghost-button compact-filter-button has-tooltip ${filter === activeFilter ? "active" : ""}"
       data-snapshot-type-filter="${filter}"
       aria-label="${escapeAttribute(`${label} (${count})`)}"
-      title="${escapeAttribute(`${label} (${count})`)}"
+      data-tooltip="${escapeAttribute(`${label} (${count})`)}"
     >
       ${icon}
       <span class="compact-filter-count">${count}</span>
@@ -4113,11 +4173,11 @@ function renderThemePreferenceButton(preference: ThemePreference, label: string,
 
   return `
     <button
-      class="theme-button ${preference === activePreference ? "active" : ""}"
+      class="theme-button has-tooltip ${preference === activePreference ? "active" : ""}"
       data-theme-preference="${escapeAttribute(preference)}"
       role="tab"
       aria-selected="${preference === activePreference ? "true" : "false"}"
-      title="${escapeAttribute(label)}"
+      data-tooltip="${escapeAttribute(label)}"
     >
       ${icon}
       <span>${escapeHtml(label)}</span>
@@ -4138,12 +4198,26 @@ function renderHeaderActionIconButton(
 
   return `
     <button
-      class="ghost-button icon-button${className}"
+      class="ghost-button icon-button has-tooltip${className}"
       data-action="${escapeAttribute(action)}"
       aria-label="${escapeAttribute(label)}"
-      title="${escapeAttribute(label)}"
+      data-tooltip="${escapeAttribute(label)}"
       ${disabled}
       ${ariaExpanded}
+    >
+      ${icon}
+    </button>
+  `;
+}
+
+function renderPrimaryActionIconButton(action: string, label: string, icon: string, disabled?: boolean): string {
+  return `
+    <button
+      class="primary-button primary-icon-button has-tooltip"
+      data-action="${escapeAttribute(action)}"
+      aria-label="${escapeAttribute(label)}"
+      data-tooltip="${escapeAttribute(label)}"
+      ${disabled ? "disabled" : ""}
     >
       ${icon}
     </button>
