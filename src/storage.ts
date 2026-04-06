@@ -1,6 +1,7 @@
 import type {
   GraphState,
   ItemStatus,
+  ReferenceFilter,
   ReferenceState,
   ReviewStateItem,
   ReviewStateRecord,
@@ -8,6 +9,7 @@ import type {
   Snapshot,
   SnapshotItem,
   SnapshotSourceType,
+  StatusFilter,
   SourceTombstone,
   SyncMode,
   ThemePreference,
@@ -39,8 +41,16 @@ function normalizeReferenceState(value: unknown): ReferenceState {
   return value === "linked" || value === "unlinked" ? value : "unlinked";
 }
 
+function normalizeReferenceFilter(value: unknown): ReferenceFilter {
+  return value === "all" || value === "linked" || value === "unlinked" ? value : "linked";
+}
+
 function normalizeSourceType(value: unknown): SnapshotSourceType {
   return value === "page" || value === "keyword" ? value : "keyword";
+}
+
+function normalizeStatusFilter(value: unknown): StatusFilter {
+  return value === "all" || value === "seen" || value === "pending" || value === "skipped" || value === "unseen" ? value : "all";
 }
 
 function normalizeSyncMode(value: unknown): SyncMode {
@@ -374,6 +384,34 @@ function normalizeStringMap(value: unknown): Record<string, string> {
   );
 }
 
+function normalizeReferenceFilterMap(value: unknown): Record<string, ReferenceFilter> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, rawValue]) =>
+        typeof rawValue === "string" && rawValue.trim() ? ([key, normalizeReferenceFilter(rawValue)] as const) : null,
+      )
+      .filter((entry): entry is readonly [string, ReferenceFilter] => entry !== null),
+  );
+}
+
+function normalizeStatusFilterMap(value: unknown): Record<string, StatusFilter> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, rawValue]) =>
+        typeof rawValue === "string" && rawValue.trim() ? ([key, normalizeStatusFilter(rawValue)] as const) : null,
+      )
+      .filter((entry): entry is readonly [string, StatusFilter] => entry !== null),
+  );
+}
+
 function normalizeNumberMap(value: unknown): Record<string, number> {
   if (!value || typeof value !== "object") {
     return {};
@@ -649,6 +687,8 @@ export function getDefaultGraphState(): GraphState {
     dockVisible: true,
     dockWidth: DEFAULT_DOCK_WIDTH,
     dockWidthsByWhiteboard: {},
+    referenceFilterByWhiteboard: {},
+    statusFilterByWhiteboard: {},
     savedSourcesByWhiteboard: {},
     activeReviewKeyByWhiteboard: {},
     sourceMetaByReviewKey: {},
@@ -717,6 +757,8 @@ export function loadGraphState(storageKey: string): GraphState {
         themePreference: normalizeThemePreference((parsed as Record<string, unknown>).themePreference),
         dockWidth: normalizedDockWidth,
         dockWidthsByWhiteboard: normalizedWidths,
+        referenceFilterByWhiteboard: normalizeReferenceFilterMap((parsed as Record<string, unknown>).referenceFilterByWhiteboard),
+        statusFilterByWhiteboard: normalizeStatusFilterMap((parsed as Record<string, unknown>).statusFilterByWhiteboard),
         ...legacyState,
       };
     }
@@ -763,6 +805,8 @@ export function loadGraphState(storageKey: string): GraphState {
       themePreference: normalizeThemePreference((parsed as Record<string, unknown>).themePreference),
       dockWidth: normalizedDockWidth,
       dockWidthsByWhiteboard: normalizedWidths,
+      referenceFilterByWhiteboard: normalizeReferenceFilterMap((parsed as Record<string, unknown>).referenceFilterByWhiteboard),
+      statusFilterByWhiteboard: normalizeStatusFilterMap((parsed as Record<string, unknown>).statusFilterByWhiteboard),
       savedSourcesByWhiteboard,
       activeReviewKeyByWhiteboard,
       sourceMetaByReviewKey,

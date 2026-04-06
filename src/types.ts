@@ -5,6 +5,7 @@ export type StatusFilter = "all" | ItemStatus;
 export type ThemeMode = "light" | "dark";
 export type ThemePreference = ThemeMode | "auto";
 export type ReferenceState = "linked" | "unlinked";
+export type ReferenceFilter = "all" | ReferenceState;
 export type SyncMode = "local-only" | "graph-backed";
 
 export interface WhiteboardInfo {
@@ -85,6 +86,8 @@ export interface GraphState {
   dockVisible: boolean;
   dockWidth: number;
   dockWidthsByWhiteboard: Record<string, number>;
+  referenceFilterByWhiteboard: Record<string, ReferenceFilter>;
+  statusFilterByWhiteboard: Record<string, StatusFilter>;
   savedSourcesByWhiteboard: Record<string, string[]>;
   activeReviewKeyByWhiteboard: Record<string, string>;
   sourceMetaByReviewKey: Record<string, SavedSourceMeta>;

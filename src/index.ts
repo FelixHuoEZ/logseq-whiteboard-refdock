@@ -16,6 +16,7 @@ import {
 import type {
   GraphState,
   ItemStatus,
+  ReferenceFilter,
   ReferenceState,
   ReviewStateRecord,
   SavedSourceMeta,
@@ -42,7 +43,6 @@ const IS_MAC_PLATFORM =
 const DEFAULT_TOGGLE_SHORTCUT_BINDING = "mod+alt+r";
 const DEFAULT_TOGGLE_SHORTCUT_LABEL = IS_MAC_PLATFORM ? "Cmd+Option+R" : "Ctrl+Alt+R";
 type SurfaceMode = "iframe" | "host";
-type ReferenceFilter = "all" | ReferenceState;
 type SnapshotTypeFilter = "all" | SnapshotItemType;
 type GraphSyncStatus = "local-only" | "pending" | "syncing" | "synced" | "error";
 
@@ -341,8 +341,6 @@ class WhiteboardRefDockApp {
 
   async refreshContext(): Promise<void> {
     const refreshToken = ++this.contextRefreshToken;
-    const previousWhiteboardId = this.currentWhiteboard?.id ?? null;
-    const previousActiveReviewKey = this.getActiveReviewKey();
     const routeWhiteboardName = this.getRouteWhiteboardName();
 
     if (routeWhiteboardName && this.locatePreviewState) {
@@ -363,10 +361,7 @@ class WhiteboardRefDockApp {
 
       if (previewStillValid) {
         this.currentWhiteboard = this.locatePreviewState.whiteboard;
-        await this.applyResolvedWhiteboardContext(refreshToken, {
-          previousWhiteboardId,
-          previousActiveReviewKey,
-        });
+        await this.applyResolvedWhiteboardContext(refreshToken);
         return;
       }
 
@@ -379,10 +374,7 @@ class WhiteboardRefDockApp {
     }
 
     this.currentWhiteboard = nextWhiteboard;
-    await this.applyResolvedWhiteboardContext(refreshToken, {
-      previousWhiteboardId,
-      previousActiveReviewKey,
-    });
+    await this.applyResolvedWhiteboardContext(refreshToken);
   }
 
   async toggleDock(): Promise<void> {
@@ -392,10 +384,7 @@ class WhiteboardRefDockApp {
     this.render();
   }
 
-  private async applyResolvedWhiteboardContext(
-    refreshToken: number,
-    previousContext?: { previousWhiteboardId: string | null; previousActiveReviewKey: string | null },
-  ): Promise<void> {
+  private async applyResolvedWhiteboardContext(refreshToken: number): Promise<void> {
     await this.hydrateCurrentWhiteboardFromGraphSync();
     if (refreshToken !== this.contextRefreshToken) {
       return;
@@ -404,15 +393,8 @@ class WhiteboardRefDockApp {
     this.syncActiveReviewKey();
     this.syncSourceInputFromActiveSnapshot();
     this.setCurrentDockWidth(this.getCurrentDockWidth());
-    const currentWhiteboardId = this.currentWhiteboard?.id ?? null;
-    const currentActiveReviewKey = this.getActiveReviewKey();
-    const shouldPreserveReferenceFilter =
-      previousContext &&
-      previousContext.previousWhiteboardId === currentWhiteboardId &&
-      previousContext.previousActiveReviewKey === currentActiveReviewKey;
-    if (!shouldPreserveReferenceFilter) {
-      this.selectDefaultReferenceFilter(this.getActiveSnapshot());
-    }
+    this.restoreStoredFiltersForCurrentWhiteboard(this.getActiveSnapshot());
+    this.persistCurrentWhiteboardFilters();
     this.persist();
     await this.syncDockSurface();
     if (refreshToken !== this.contextRefreshToken) {
@@ -428,6 +410,7 @@ class WhiteboardRefDockApp {
     this.currentWhiteboard = await getCurrentWhiteboard();
     this.syncActiveReviewKey();
     this.syncSourceInputFromActiveSnapshot();
+    this.restoreStoredFiltersForCurrentWhiteboard(this.getActiveSnapshot());
 
     if (!this.currentWhiteboard) {
       const routePath = this.getCurrentRoutePath();
@@ -464,6 +447,7 @@ class WhiteboardRefDockApp {
     this.currentWhiteboard = await getCurrentWhiteboard();
     this.syncActiveReviewKey();
     this.syncSourceInputFromActiveSnapshot();
+    this.restoreStoredFiltersForCurrentWhiteboard(this.getActiveSnapshot());
 
     if (!this.currentWhiteboard) {
       const routePath = this.getCurrentRoutePath();
@@ -942,6 +926,42 @@ class WhiteboardRefDockApp {
     this.sourceValue = snapshot.sourceValue;
   }
 
+  private persistCurrentWhiteboardFilters(): void {
+    if (!this.currentWhiteboard) {
+      return;
+    }
+
+    this.graphState.referenceFilterByWhiteboard[this.currentWhiteboard.id] = this.referenceFilter;
+    this.graphState.statusFilterByWhiteboard[this.currentWhiteboard.id] = this.statusFilter;
+  }
+
+  private restoreStoredFiltersForCurrentWhiteboard(snapshot: Snapshot | null): void {
+    if (!this.currentWhiteboard) {
+      this.referenceFilter = this.getDefaultReferenceFilter(snapshot);
+      this.statusFilter = "all";
+      return;
+    }
+
+    this.referenceFilter =
+      this.graphState.referenceFilterByWhiteboard[this.currentWhiteboard.id] ?? this.getDefaultReferenceFilter(snapshot);
+    this.statusFilter = this.graphState.statusFilterByWhiteboard[this.currentWhiteboard.id] ?? "all";
+  }
+
+  private resetCurrentViewFilters(
+    snapshot: Snapshot | null,
+    options?: { preserveReferenceFilter?: boolean; preserveStatusFilter?: boolean },
+  ): void {
+    if (!options?.preserveStatusFilter) {
+      this.statusFilter = "all";
+    }
+
+    if (!options?.preserveReferenceFilter) {
+      this.selectDefaultReferenceFilter(snapshot);
+    }
+
+    this.persistCurrentWhiteboardFilters();
+  }
+
   private setActiveReviewKey(reviewKey: string): void {
     if (!this.currentWhiteboard) {
       return;
@@ -954,8 +974,7 @@ class WhiteboardRefDockApp {
 
     this.graphState.activeReviewKeyByWhiteboard[this.currentWhiteboard.id] = reviewKey;
     this.syncSourceInputFromActiveSnapshot();
-    this.statusFilter = "all";
-    this.selectDefaultReferenceFilter(this.getActiveSnapshot());
+    this.resetCurrentViewFilters(this.getActiveSnapshot());
     this.persist();
     this.render();
     this.restoreScrollPosition();
@@ -1241,14 +1260,17 @@ class WhiteboardRefDockApp {
     return summary;
   }
 
-  private selectDefaultReferenceFilter(snapshot: Snapshot | null): void {
+  private getDefaultReferenceFilter(snapshot: Snapshot | null): ReferenceFilter {
     if (!snapshot) {
-      this.referenceFilter = "linked";
-      return;
+      return "linked";
     }
 
     const counts = this.getReferenceCounts(snapshot);
-    this.referenceFilter = counts.linked > 0 ? "linked" : "unlinked";
+    return counts.linked > 0 ? "linked" : "unlinked";
+  }
+
+  private selectDefaultReferenceFilter(snapshot: Snapshot | null): void {
+    this.referenceFilter = this.getDefaultReferenceFilter(snapshot);
   }
 
   private getHostDocument(): Document | null {
@@ -2011,11 +2033,12 @@ class WhiteboardRefDockApp {
 
     try {
       const reviewKey = buildReviewKey(whiteboard.id, this.sourceType, sourceValue);
-      const shouldPreserveReferenceFilter = Boolean(this.graphState.sourceMetaByReviewKey[reviewKey]);
+      const shouldPreserveViewFilters = Boolean(this.graphState.sourceMetaByReviewKey[reviewKey]);
       const snapshot = await this.buildSnapshotForSource(whiteboard, this.sourceType, sourceValue);
       const mergedSnapshot = this.storeSnapshot(snapshot, {
         resetScroll: true,
-        preserveReferenceFilter: shouldPreserveReferenceFilter,
+        preserveReferenceFilter: shouldPreserveViewFilters,
+        preserveStatusFilter: shouldPreserveViewFilters,
       });
       this.message = "";
       this.showToast(`Saved ${mergedSnapshot.items.length} snapshot items.`);
@@ -2045,7 +2068,7 @@ class WhiteboardRefDockApp {
 
   private storeSnapshot(
     snapshot: Snapshot,
-    options: { resetScroll: boolean; preserveReferenceFilter: boolean },
+    options: { resetScroll: boolean; preserveReferenceFilter: boolean; preserveStatusFilter: boolean },
   ): Snapshot {
     const mergedSnapshot = this.mergeSnapshotWithReviewState(snapshot);
     const reviewKey = this.upsertSavedSource(mergedSnapshot);
@@ -2056,10 +2079,10 @@ class WhiteboardRefDockApp {
     }
 
     this.syncSourceInputFromActiveSnapshot();
-    this.statusFilter = "all";
-    if (!options.preserveReferenceFilter) {
-      this.selectDefaultReferenceFilter(mergedSnapshot);
-    }
+    this.resetCurrentViewFilters(mergedSnapshot, {
+      preserveReferenceFilter: options.preserveReferenceFilter,
+      preserveStatusFilter: options.preserveStatusFilter,
+    });
     this.persist();
     this.scheduleCurrentWhiteboardSync();
 
@@ -2120,7 +2143,7 @@ class WhiteboardRefDockApp {
     this.reconcileSourceTombstones();
 
     this.syncSourceInputFromActiveSnapshot();
-    this.selectDefaultReferenceFilter(this.getActiveSnapshot());
+    this.resetCurrentViewFilters(this.getActiveSnapshot());
     this.persist();
     this.scheduleCurrentWhiteboardSync();
     this.message = "";
@@ -2152,7 +2175,11 @@ class WhiteboardRefDockApp {
           : { id: whiteboardId, name: whiteboardName };
       const refreshedSnapshot = await this.buildSnapshotForSource(whiteboard, sourceType, sourceValue);
       const orderedSnapshot = this.preserveSnapshotItemOrder(existingSnapshot ?? null, refreshedSnapshot);
-      const mergedSnapshot = this.storeSnapshot(orderedSnapshot, { resetScroll: false, preserveReferenceFilter: true });
+      const mergedSnapshot = this.storeSnapshot(orderedSnapshot, {
+        resetScroll: false,
+        preserveReferenceFilter: true,
+        preserveStatusFilter: true,
+      });
       this.message = "";
       this.showToast(`Refreshed ${mergedSnapshot.sourceValue}.`);
     } catch (error) {
@@ -2191,8 +2218,7 @@ class WhiteboardRefDockApp {
     this.reconcileSourceTombstones();
 
     this.syncSourceInputFromActiveSnapshot();
-    this.statusFilter = "all";
-    this.selectDefaultReferenceFilter(this.getActiveSnapshot());
+    this.resetCurrentViewFilters(this.getActiveSnapshot());
     this.persist();
     this.scheduleCurrentWhiteboardSync();
     this.message = "";
@@ -2781,6 +2807,8 @@ class WhiteboardRefDockApp {
         }
 
         this.statusFilter = nextFilter;
+        this.persistCurrentWhiteboardFilters();
+        this.persist();
         this.render();
       });
     });
@@ -2793,6 +2821,8 @@ class WhiteboardRefDockApp {
         }
 
         this.referenceFilter = nextFilter;
+        this.persistCurrentWhiteboardFilters();
+        this.persist();
         this.render();
       });
     });
